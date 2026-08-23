@@ -63,7 +63,11 @@ cd backend
 # 1. Parse Houston 311 extracts (data/raw/houston_311/*.txt) into DuckDB
 uv run python -m bellwether.cli ingest-311
 
-# 2. Snap complaints to OSM street segments
+# 2. Snap complaints to OSM street segments — needs a local Geofabrik Texas
+#    PBF extract (the live Overpass API proved too unreliable for a scripted
+#    multi-tile job — see "Current status" below). One-time download:
+#    curl -sL -o data/raw/osm/texas-latest.osm.pbf \
+#      https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf
 uv run python -m bellwether.cli snap-streets
 
 # 3. Pull NOAA moisture history + current drought class (free, no key needed)
@@ -95,14 +99,16 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-15 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser/filter/dedupe logic, and the Calibrator's outcome-harvesting and guidance-drafting logic — all pure-function tests that run without API keys.
+16 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), and the Calibrator's outcome-harvesting and guidance-drafting logic — all pure-function tests that run without API keys.
 
 ## Current status
 
+- **Data pipeline is complete and verified against real data.** All five Houston 311 extracts (2022 through 2026-08, ~1.7GB) are downloaded, byte-verified against the server, and ingested: **395,783 clean, geocoded, deduplicated water/sewer/drainage complaints**, spanning January 2022 through the day this was run. Two real bugs were found and fixed against the live extracts (not caught by synthetic fixtures alone): the export re-inserts its full header line every ~30k rows (a naive parser tries to convert the literal string "Latitude" to a coordinate and crashes), and an early parsing approach silently dropped the first several data rows on every file. Both have regression tests. One data-integrity bug was also caught and corrected: a file originally downloaded as "2026 YTD" was actually Houston's archived "2021 (Jul-Dec)" extract under a URL that doesn't encode the year — the correct current-year source is the "MTD" (month-to-date) file, which is now what's ingested.
+- **Street segmentation is complete.** 168,341 Houston-area street segments extracted from a local Geofabrik Texas OSM PBF extract (not the live Overpass API — see below), with **99.5% of complaints (393,940/395,783) successfully snapped** to a segment within 150m.
+- **Why a local PBF instead of Overpass:** the shared Overpass API instance proved unreliable for a scripted multi-tile job — it cycled between working normally and refusing every connection within the same session (confirmed via direct `curl` testing, not just our client code), independent of request pacing or backoff strategy. Since street geometry doesn't change week to week, a one-time local extract removes that live dependency entirely rather than working around it. `snap-streets` now uses the PBF path by default; the original Overpass path is kept as `snap-streets-overpass` for environments where the ~715MB download isn't practical.
 - Backend and frontend scaffolds build and run end-to-end (verified live: FastAPI `/healthz`, `/queue`, `/segments/{id}` all respond correctly; Next.js dispatcher board renders against the live API).
-- NOAA moisture sync verified against live data: Houston's 30-day antecedent rainfall is genuinely trending toward a dry spell as of this writing, and the US Drought Monitor genuinely returns no active polygon over the metro — both matching the design research.
-- Houston 311 extracts (2022–2026, ~1.6GB) are downloading from the city's server, which throttles heavily; ingestion has been validated against a synthetic fixture matching the real schema and is ready to run the moment the extracts land.
-- Agent cascade (Triage/Investigator/Skeptic/Adjudicator/Calibrator) is fully wired against the OpenAI Agents SDK and imports cleanly; a live run requires `OPENAI_API_KEY` and populated `MIREYE_API_KEY_*` and hasn't yet been run against real complaints (needs the ingested 311 data + a profiled study area first).
+- NOAA moisture sync verified against live data: Houston's 30-day antecedent rainfall genuinely trended toward a dry spell during development, and the US Drought Monitor genuinely returned no active polygon over the metro — both matching the design research.
+- Agent cascade (Triage/Investigator/Skeptic/Adjudicator/Calibrator) is fully wired against the OpenAI Agents SDK and imports cleanly; a live run requires `OPENAI_API_KEY` and populated `MIREYE_API_KEY_*` and hasn't yet been run against real complaints — the remaining step before that is bulk-profiling the study area through Mireye (`profile-study-area`).
 - Not yet built: negative-control live run against NYC, ablation runs, the public address-lookup surface, and the SSURGO `corsteel`/`corcon` field request to Mireye.
 
 ## What we cannot know

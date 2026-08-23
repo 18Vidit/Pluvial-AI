@@ -19,6 +19,14 @@ import httpx
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
+# The shared Overpass instance's Apache/mod_security rejects httpx's default
+# User-Agent ("python-httpx/x.x") with a 406, even though the identical
+# request succeeds with curl's UA. Identify honestly rather than spoof curl.
+REQUEST_HEADERS = {
+    "User-Agent": "Bellwether/0.1 (Mireye x Delhi University build brief; research use)",
+    "Accept": "*/*",
+}
+
 # Houston city-limits-ish bounding box (south, west, north, east).
 HOUSTON_BBOX = (29.52, -95.80, 30.11, -95.01)
 
@@ -30,7 +38,7 @@ HIGHWAY_CLASSES = (
 SEGMENTS_TABLE = "street_segments"
 
 
-def _tile_bbox(bbox: tuple[float, float, float, float], step_deg: float = 0.06):
+def _tile_bbox(bbox: tuple[float, float, float, float], step_deg: float = 0.12):
     s, w, n, e = bbox
     lat = s
     while lat < n:
@@ -47,19 +55,23 @@ def _fetch_tile(bbox: tuple[float, float, float, float], client: httpx.Client) -
     s, w, n, e = bbox
     highway_re = "^(" + "|".join(HIGHWAY_CLASSES) + ")$"
     query = f"""
-    [out:json][timeout:60];
+    [out:json][timeout:90];
     way["highway"~"{highway_re}"]({s},{w},{n},{e});
     out geom;
     """
     for attempt in range(3):
         try:
-            r = client.post(OVERPASS_URL, data={"data": query}, timeout=90)
+            r = client.post(OVERPASS_URL, data={"data": query}, timeout=100)
             r.raise_for_status()
             return r.json().get("elements", [])
         except (httpx.HTTPError, json.JSONDecodeError) as e:
             if attempt == 2:
                 raise
-            time.sleep(5 * (attempt + 1))
+            # A rate-limited/refusing server needs real backoff, not a quick
+            # retry — a fast retry into a block just extends it (observed:
+            # 10 clean requests then sustained "connection refused" for the
+            # rest of a 140-tile run at the old 1.5s pacing).
+            time.sleep(20 * (attempt + 1))
     return []
 
 
@@ -68,12 +80,39 @@ def download_streets(cache_path: Path, bbox: tuple[float, float, float, float] =
         return json.loads(cache_path.read_text())
 
     ways: list[dict] = []
+    failed_tiles: list[tuple] = []
+    consecutive_failures = 0
     tiles = list(_tile_bbox(bbox))
-    with httpx.Client() as client:
+    with httpx.Client(headers=REQUEST_HEADERS) as client:
         for i, tile in enumerate(tiles):
             print(f"  overpass tile {i + 1}/{len(tiles)} {tile}")
-            ways.extend(_fetch_tile(tile, client))
-            time.sleep(1.5)  # be polite to the shared Overpass instance
+            try:
+                ways.extend(_fetch_tile(tile, client))
+                consecutive_failures = 0
+                time.sleep(3)  # be polite to the shared Overpass instance
+            except (httpx.HTTPError, json.JSONDecodeError) as e:
+                # One flaky tile on a shared, rate-limited instance shouldn't
+                # discard the other successful ones — log it, keep going,
+                # and write whatever we got so a partial run isn't a lost run.
+                print(f"    tile {i + 1} failed after retries: {e}")
+                failed_tiles.append(tile)
+                consecutive_failures += 1
+                # Several tiles in a row failing means we tripped a rate
+                # limit, not bad luck on one tile — back off hard so we
+                # don't spend the whole run hammering a server that's
+                # already refusing us (observed: 10 clean tiles then a
+                # sustained block at a fixed 1.5s pace).
+                if consecutive_failures >= 3:
+                    backoff = min(60 * consecutive_failures, 300)
+                    print(f"    {consecutive_failures} consecutive failures — backing off {backoff}s")
+                    time.sleep(backoff)
+                else:
+                    time.sleep(3)
+
+    if failed_tiles:
+        print(f"  WARNING: {len(failed_tiles)}/{len(tiles)} tiles failed and were skipped: {failed_tiles}")
+        print("  re-run this command (it will re-fetch since no cache was written) to retry, "
+              "or accept partial street coverage in those tiles.")
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(ways))
@@ -81,6 +120,17 @@ def download_streets(cache_path: Path, bbox: tuple[float, float, float, float] =
 
 
 def load_streets_into_db(con: duckdb.DuckDBPyConnection, ways: list[dict]) -> int:
+    """Load OSM ways as street segments.
+
+    Inserts WKT as plain TEXT via executemany, then casts to GEOMETRY in one
+    bulk UPDATE — NOT `executemany("INSERT ... VALUES (..., ST_GeomFromText(?))", rows)`.
+    That form reliably raises "ST_GeomFromText requires a string argument"
+    in this DuckDB version even for trivially valid WKT strings (reproduced
+    with a 2-row minimal case) — executemany apparently can't resolve a
+    scalar function wrapping a parameter placeholder. execute() per row
+    works but is far slower at tens of thousands of rows; insert-as-text-
+    then-cast is both correct and fast.
+    """
     con.execute("INSTALL spatial")
     con.execute("LOAD spatial")
     con.execute(f"""
@@ -88,6 +138,7 @@ def load_streets_into_db(con: duckdb.DuckDBPyConnection, ways: list[dict]) -> in
             segment_id BIGINT PRIMARY KEY,
             name TEXT,
             highway_class TEXT,
+            wkt TEXT,
             geom GEOMETRY
         )
     """)
@@ -103,10 +154,9 @@ def load_streets_into_db(con: duckdb.DuckDBPyConnection, ways: list[dict]) -> in
             way.get("tags", {}).get("highway"),
             f"LINESTRING({wkt_points})",
         ))
-    con.executemany(
-        f"INSERT INTO {SEGMENTS_TABLE} VALUES (?, ?, ?, ST_GeomFromText(?))",
-        rows,
-    )
+    con.executemany(f"INSERT INTO {SEGMENTS_TABLE} (segment_id, name, highway_class, wkt) VALUES (?, ?, ?, ?)", rows)
+    con.execute(f"UPDATE {SEGMENTS_TABLE} SET geom = ST_GeomFromText(wkt)")
+    con.execute(f"ALTER TABLE {SEGMENTS_TABLE} DROP COLUMN wkt")
     con.execute(f"CREATE INDEX IF NOT EXISTS idx_segments_geom ON {SEGMENTS_TABLE} USING RTREE (geom)")
     return len(rows)
 

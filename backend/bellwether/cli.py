@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from bellwether.agents import calibrator
 from bellwether.agents.reawaken import scan_and_reawaken
-from bellwether.ingest import houston_311, moisture_sync, osm_segments
+from bellwether.ingest import houston_311, moisture_sync, osm_pbf, osm_segments
 from bellwether.memory import dal
 from bellwether.mireye.client import MireyeAccount
 from bellwether.mireye.profile_job import run_profiling_shard, select_stratified_segments, shard_by_longitude
@@ -23,6 +23,7 @@ DEFAULT_DUCKDB = Path("../data/bellwether.duckdb")
 DEFAULT_SQLITE = Path("../data/bellwether.db")
 DEFAULT_RAW = Path("../data/raw/houston_311")
 DEFAULT_OSM_CACHE = Path("../data/raw/osm_streets_houston.json")
+DEFAULT_OSM_PBF = Path("../data/raw/osm/texas-latest.osm.pbf")
 
 ESCALATION_CASE_TYPES = ["Major Water Leak", "Water Main Valve"]
 
@@ -34,8 +35,25 @@ def ingest_311(db: Path = DEFAULT_DUCKDB, raw_dir: Path = DEFAULT_RAW) -> None:
 
 
 @app.command()
-def snap_streets(db: Path = DEFAULT_DUCKDB, cache: Path = DEFAULT_OSM_CACHE) -> None:
-    """Download OSM street geometry and snap complaints to nearest segment."""
+def snap_streets(db: Path = DEFAULT_DUCKDB, pbf: Path = DEFAULT_OSM_PBF) -> None:
+    """Extract Houston-area street geometry from a local OSM PBF extract and
+    snap complaints to the nearest segment.
+
+    Uses a local Geofabrik Texas extract rather than the live Overpass API —
+    that shared instance proved unreliable in practice (cycled between
+    working and refusing connections mid-run). Download it once:
+      curl -sL -o data/raw/osm/texas-latest.osm.pbf \\
+        https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf
+    """
+    osm_pbf.run(db, pbf)
+
+
+@app.command()
+def snap_streets_overpass(db: Path = DEFAULT_DUCKDB, cache: Path = DEFAULT_OSM_CACHE) -> None:
+    """Legacy path: fetch street geometry from the live Overpass API instead
+    of a local PBF extract. Kept for environments where downloading the
+    715MB Texas PBF isn't practical, but expect it to be flaky — see
+    snap-streets' docstring for what happened when this was the default."""
     osm_segments.run(db, cache)
 
 

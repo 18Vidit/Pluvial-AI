@@ -39,6 +39,7 @@ data/
 # Editors
 .vscode/
 .idea/
+.claude/
 
 # Design specs (internal planning docs, not part of the shipped product)
 docs/superpowers/specs/
