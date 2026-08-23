@@ -16,7 +16,7 @@ import httpx
 
 BASE_URL = "https://api.mireye.com"
 BATCH_MAX_LOCATIONS = 25
-RATE_LIMIT_PER_MINUTE = 60
+RATE_LIMIT_PER_MINUTE = 20  # Free-plan ceiling; Build-plan accounts (60/min) can override
 
 
 class MireyeError(RuntimeError):
@@ -67,12 +67,25 @@ class MireyeClient:
         self._request_timestamps.append(time.monotonic())
 
     def _post(self, path: str, json_body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-        self._respect_rate_limit()
-        r = self._client.post(path, json=json_body, headers=headers)
-        if r.status_code == 422:
-            raise MireyeError(f"validation error on {path}: {r.text}")
-        r.raise_for_status()
-        return r.json()
+        for attempt in range(12):
+            self._respect_rate_limit()
+            try:
+                r = self._client.post(path, json=json_body, headers=headers)
+            except httpx.TimeoutException:
+                time.sleep(5)
+                continue
+            if r.status_code == 422:
+                raise MireyeError(f"validation error on {path}: {r.text}")
+            if r.status_code == 429:
+                retry_after = float(r.headers.get("retry-after", 5))
+                time.sleep(retry_after)
+                continue
+            if r.status_code == 409 and "still being computed" in r.text:
+                time.sleep(5)
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise MireyeError(f"still not resolved on {path} after 12 retries")
 
     def quote(self, fields: list[str], locations: int = 1) -> dict[str, Any]:
         return self._post("/v1/fetch/quote", {"fields": fields, "locations": locations})
