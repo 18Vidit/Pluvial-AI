@@ -1,8 +1,10 @@
-# Bellwether
+# Pluvial-AI
 
 An agent that decides which of Houston's vague 311 water complaints ("brown water," "weird smell," "low pressure") are early symptoms of a main about to fail — given what the clay underneath them is doing right now — and which a crew should be sent to today.
 
 Built for the Mireye × Delhi University Build Brief. Full design rationale, dataset verification, and the physics behind the enrichment are in [`docs/superpowers/specs/2026-08-23-bellwether-design.md`](docs/superpowers/specs/2026-08-23-bellwether-design.md). The implementation plan is in [`docs/superpowers/specs/2026-08-23-bellwether-implementation-plan.md`](docs/superpowers/specs/2026-08-23-bellwether-implementation-plan.md).
+
+The Python package underneath is still named `bellwether` (the agent's internal codename) — every `bellwether.cli` command and `backend/bellwether/` path below refers to that package, not a different project.
 
 ## Why Houston
 
