@@ -4,21 +4,20 @@ re-run any time — upserts are idempotent."""
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 
 from pluvial.ingest import ncei, usdm
 from pluvial.memory import dal
 
 
-def sync(db_path: Path, lookback_days: int = 120) -> int:
+def sync(lookback_days: int = 120) -> int:
     end = date.today()
     start = end - timedelta(days=lookback_days)
     raw = ncei.fetch_daily(start, end)
     series = ncei.compute_series(raw)
     current_dm = usdm.current_usdm_class()
 
-    dal.init_db(db_path)
-    with dal.connect(db_path) as con:
+    dal.init_db()
+    with dal.connect() as con:
         for i, day in enumerate(series):
             is_latest = i == len(series) - 1
             dal.upsert_moisture_day(
@@ -30,7 +29,5 @@ def sync(db_path: Path, lookback_days: int = 120) -> int:
 
 
 if __name__ == "__main__":
-    import sys
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pluvial.db")
-    n = sync(db)
+    n = sync()
     print(f"synced {n} days of moisture history")

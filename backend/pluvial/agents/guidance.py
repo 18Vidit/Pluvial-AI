@@ -58,5 +58,7 @@ def compose_guidance(base_role_instructions: str, calibration_notes: list[str]) 
 
 
 def load_calibration_notes(con) -> list[str]:
-    rows = con.execute("SELECT version, run_at, guidance_diff FROM calibration ORDER BY version ASC").fetchall()
+    from pluvial.memory import dal
+
+    rows = dal.calibration_history(con)
     return [f"[v{r['version']} @ {r['run_at']}] {r['guidance_diff']}" for r in rows]

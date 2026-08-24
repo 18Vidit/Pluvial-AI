@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from dataclasses import dataclass
+from datetime import timedelta
+
+import psycopg
 
 from pluvial.agents.cascade import run_cascade
 from pluvial.agents.context import CascadeContext
@@ -32,57 +34,42 @@ class BacktestCase:
     label: str  # confirmed_failure | no_failure, computed from data AFTER T, never shown to the agent
 
 
-def frozen_guidance_version(con: sqlite3.Connection, frozen_at: str) -> int:
-    row = con.execute("SELECT MAX(version) AS v FROM calibration WHERE run_at <= ?", (frozen_at,)).fetchone()
-    return row["v"] or 0
+def frozen_guidance_version(con: psycopg.Connection, frozen_at: str) -> int:
+    return dal.frozen_guidance_version(con, frozen_at)
 
 
 def build_backtest_cases(
-    con: sqlite3.Connection, frozen_at: str, label_window_days: int, escalation_case_types: list[str]
+    con: psycopg.Connection, frozen_at: str, label_window_days: int, escalation_case_types: list[str]
 ) -> list[BacktestCase]:
     """Select complaints created on/before T, and compute their label from
     data strictly AFTER their own created_at + window — never from data
     the agent could see at decision time."""
-    rows = con.execute(
-        "SELECT * FROM complaints WHERE created_at <= ? ORDER BY created_at", (frozen_at,)
-    ).fetchall()
+    rows = dal.complaints_up_to(con, frozen_at)
 
-    type_list = ", ".join(f"'{t}'" for t in escalation_case_types)
     cases = []
     for r in rows:
         if r["segment_id"] is None:
             continue
-        window_end = f"+{label_window_days} days"
-        escalated = con.execute(
-            f"""
-            SELECT case_number FROM complaints
-            WHERE segment_id = ? AND created_at > ? AND created_at <= datetime(?, ?)
-              AND incident_case_type IN ({type_list})
-            LIMIT 1
-            """,
-            (r["segment_id"], r["created_at"], r["created_at"], window_end),
-        ).fetchone()
-        repeat = con.execute(
-            """
-            SELECT case_number FROM complaints
-            WHERE segment_id = ? AND created_at > ? AND created_at <= datetime(?, ?) AND case_number != ?
-            LIMIT 1
-            """,
-            (r["segment_id"], r["created_at"], r["created_at"], window_end, r["case_number"]),
-        ).fetchone()
+        window_end = r["created_at"] + timedelta(days=label_window_days)
+        escalated = dal.escalating_complaint(
+            con, r["segment_id"], r["created_at"], window_end, escalation_case_types
+        )
+        repeat = dal.repeat_complaint(
+            con, r["segment_id"], r["created_at"], window_end, exclude_case=r["case_number"]
+        )
         label = "confirmed_failure" if (escalated or repeat) else "no_failure"
 
         cases.append(BacktestCase(
             segment_id=r["segment_id"],
             case_numbers=[r["case_number"]],
-            complaint_summary=json.dumps(dict(r), default=str),
+            complaint_summary=json.dumps(r, default=str),
             label=label,
         ))
     return cases
 
 
 async def run_backtest(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     account: MireyeAccount,
     frozen_at: str,
     label_window_days: int,

@@ -11,7 +11,7 @@ one agent run cannot blow the budget.
 """
 from __future__ import annotations
 
-import sqlite3
+import psycopg
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,7 +41,7 @@ class RunBudget:
 
 
 class MireyeToolWrapper:
-    def __init__(self, con: sqlite3.Connection, client: MireyeClient, run_budget: RunBudget):
+    def __init__(self, con: psycopg.Connection, client: MireyeClient, run_budget: RunBudget):
         self.con = con
         self.client = client
         self.run_budget = run_budget

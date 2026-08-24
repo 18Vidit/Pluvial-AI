@@ -9,7 +9,8 @@ just recomputing metrics.
 from __future__ import annotations
 
 import json
-import sqlite3
+
+import psycopg
 
 from pluvial.agents.cascade import run_cascade
 from pluvial.agents.context import CascadeContext
@@ -19,7 +20,7 @@ from pluvial.mireye.client import MireyeAccount, MireyeClient
 from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
-def _condition_currently_holds(con: sqlite3.Connection, segment_id: int, condition: dict) -> bool:
+def _condition_currently_holds(con: psycopg.Connection, segment_id: int, condition: dict) -> bool:
     trigger = dal.current_trigger_state(con)
     trigger_state = trigger["trigger_state"] if trigger else None
 
@@ -37,7 +38,7 @@ def _condition_currently_holds(con: sqlite3.Connection, segment_id: int, conditi
 
 
 async def scan_and_reawaken(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     account: MireyeAccount,
     run_budget_ceiling: int,
     guidance_version: int,
@@ -53,15 +54,8 @@ async def scan_and_reawaken(
                 continue
 
             seg = dal.get_segment(con, v["segment_id"])
-            case_numbers = json.loads(v["case_numbers"])
-            complaints = [
-                dict(row)
-                for row in con.execute(
-                    "SELECT * FROM complaints WHERE case_number IN (%s)"
-                    % ",".join("?" for _ in case_numbers),
-                    case_numbers,
-                ).fetchall()
-            ]
+            case_numbers = v["case_numbers"]
+            complaints = dal.complaints_by_case_numbers(con, case_numbers)
 
             ctx = CascadeContext(
                 con=con,

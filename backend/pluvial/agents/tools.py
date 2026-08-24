@@ -29,14 +29,10 @@ def dossier_lookup(wrapper: RunContextWrapper[CascadeContext], segment_id: int) 
     it tells you what has already been decided about this ground."""
     ctx = wrapper.context
     seg = dal.get_segment(ctx.con, segment_id)
-    verdicts = ctx.con.execute(
-        "SELECT verdict_id, disposition, priority, decided_at, reasoning_json FROM verdicts "
-        "WHERE segment_id = ? ORDER BY decided_at DESC LIMIT 10",
-        (segment_id,),
-    ).fetchall()
+    verdicts = dal.recent_verdicts(ctx.con, segment_id, limit=10)
     return json.dumps({
         "segment": seg,
-        "prior_verdicts": [dict(v) for v in verdicts],
+        "prior_verdicts": verdicts,
     }, default=str)
 
 
@@ -72,16 +68,8 @@ def precedent_search(
     symptom class, and how they turned out. Use to ground a claim in
     precedent rather than first-principles reasoning alone."""
     ctx = wrapper.context
-    rows = ctx.con.execute(
-        """
-        SELECT p.*, v.disposition AS verdict_disposition, v.decided_at
-        FROM precedents p JOIN verdicts v ON v.verdict_id = p.verdict_id
-        WHERE p.shrink_swell_class = ? AND p.trigger_state = ? AND p.symptom_class = ?
-        ORDER BY v.decided_at DESC LIMIT 10
-        """,
-        (shrink_swell_class, trigger_state, symptom_class),
-    ).fetchall()
-    return json.dumps([dict(r) for r in rows], default=str)
+    rows = dal.precedent_search(ctx.con, shrink_swell_class, trigger_state, symptom_class)
+    return json.dumps(rows, default=str)
 
 
 @function_tool

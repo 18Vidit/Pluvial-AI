@@ -1,9 +1,9 @@
 """The run context shared by every agent in one cascade pass. Holds the
-open SQLite connection, the wrapped Mireye tool, and the credit budget for
+open Postgres connection, the wrapped Mireye tool, and the credit budget for
 this single run — never shared across runs, per design spec §5.2."""
 from __future__ import annotations
 
-import sqlite3
+import psycopg
 from dataclasses import dataclass
 
 from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
@@ -11,7 +11,7 @@ from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 @dataclass
 class CascadeContext:
-    con: sqlite3.Connection
+    con: psycopg.Connection
     mireye: MireyeToolWrapper
     run_budget: RunBudget
     guidance_version: int

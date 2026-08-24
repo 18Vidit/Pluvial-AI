@@ -9,7 +9,8 @@ to show and the Calibrator has nothing to harvest.
 from __future__ import annotations
 
 import json
-import sqlite3
+
+import psycopg
 
 from pluvial.agents.cascade import run_cascade
 from pluvial.agents.context import CascadeContext
@@ -20,7 +21,7 @@ from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
 def record_cascade_result(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     segment_id: int,
     case_numbers: list[str],
     guidance_version: int,
@@ -58,7 +59,7 @@ def record_cascade_result(
 
 
 def unadjudicated_complaints(
-    con: sqlite3.Connection, since: str | None, until: str | None, max_cases: int | None
+    con: psycopg.Connection, since: str | None, until: str | None, max_cases: int | None
 ) -> list[dict]:
     """Complaints on a profiled (cached) segment that don't yet have any
     verdict covering them. One complaint = one case, matching how the
@@ -67,30 +68,14 @@ def unadjudicated_complaints(
     caller target an older slice (e.g. to demonstrate the Calibrator
     against complaints whose 30-day outcome window has already closed in
     real historical data, rather than waiting on calendar time)."""
-    already_covered: set[str] = set()
-    for row in con.execute("SELECT case_numbers FROM verdicts"):
-        already_covered.update(json.loads(row["case_numbers"]))
-
-    query = """
-        SELECT c.* FROM complaints c
-        JOIN segments s ON s.segment_id = c.segment_id
-        WHERE s.profile_json IS NOT NULL
-    """
-    params: list = []
-    if since:
-        query += " AND c.created_at >= ?"
-        params.append(since)
-    if until:
-        query += " AND c.created_at <= ?"
-        params.append(until)
-    query += " ORDER BY c.created_at DESC"
-
-    rows = [dict(r) for r in con.execute(query, params).fetchall() if r["case_number"] not in already_covered]
+    already_covered = dal.covered_case_numbers(con)
+    rows = dal.uncovered_complaints_on_profiled_segments(con, since, until)
+    rows = [r for r in rows if r["case_number"] not in already_covered]
     return rows[:max_cases] if max_cases else rows
 
 
 async def process_new_complaints(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     account: MireyeAccount,
     run_budget_ceiling: int,
     guidance_version: int,

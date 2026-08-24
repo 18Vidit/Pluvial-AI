@@ -17,7 +17,7 @@ Ingestor (ETL)  →  Triage  →  Investigator ⇄ Skeptic  →  Adjudicator  �
 
 - **Data**: Mireye (soil, drainage, karst, consequence fields) + Houston 311 CRIS extracts + NOAA NCEI daily precipitation (the moisture trigger) + US Drought Monitor (coarse corroborator).
 - **Enrichment**: Soil Movement Potential (spatial) × Movement Trigger State (temporal, requires memory) × Void Formation Likelihood, kept separate from a Consequence surface. No formula combines them — the agents argue over thresholded facts.
-- **Memory**: SQLite. Segment dossiers fetched once from Mireye, cached forever. Every verdict carries an invalidation condition; the weekly Calibrator re-opens closed cases when the ground's physical state changes, unprompted.
+- **Memory**: Neon Postgres. Segment dossiers fetched once from Mireye, cached forever. Every verdict carries an invalidation condition; the weekly Calibrator re-opens closed cases when the ground's physical state changes, unprompted.
 
 ## Repo layout
 
@@ -25,7 +25,7 @@ Ingestor (ETL)  →  Triage  →  Investigator ⇄ Skeptic  →  Adjudicator  �
 backend/pluvial/
   ingest/    Houston 311 parser, OSM street snapping, NOAA/USDM moisture sync
   mireye/    field selection, REST client, wrapped agent-facing tool, bulk profiler
-  memory/    SQLite schema + typed data access layer
+  memory/    Postgres schema + typed data access layer
   agents/    Triage/Investigator/Skeptic/Adjudicator, Calibrator, reawakening loop
   eval/      backtest harness, NYC negative control, ablations
   api/       FastAPI (GET /queue, /segments/{id}, /lookup?address=, POST /reprofile/{id})
@@ -37,7 +37,7 @@ frontend/    Next.js dispatcher board
 ```bash
 cd backend
 uv sync
-cp .env.example .env   # fill in OPENAI_API_KEY, MIREYE_API_KEY_1/2/3
+cp .env.example .env   # fill in DATABASE_URL, OPENAI_API_KEY, MIREYE_API_KEY_1/2/3
 
 cd ../frontend
 npm install
@@ -46,11 +46,21 @@ npm install
 `.env` (backend):
 
 ```
+DATABASE_URL=postgresql://...   # Neon Postgres connection string (memory store)
 OPENAI_API_KEY=...
 MIREYE_API_KEY_1=...   # sharded accounts, one per team member (design spec §9)
 MIREYE_API_KEY_2=...
 MIREYE_API_KEY_3=...
 ```
+
+The memory store (segments, complaints, verdicts, moisture history,
+calibration, precedents) lives in Neon Postgres, not a local file — every
+`pluvial` command that touches it reads `DATABASE_URL` and applies the
+schema (`pluvial/memory/schema_postgres.sql`) automatically on first use, so
+no separate migrate/init step is needed for a fresh database. If you're
+pointing at a database that already has data in a local `pluvial.db` SQLite
+file from an older setup, `uv run python -m pluvial.cli_migrate` copies it
+over once, verifying row counts match before reporting success.
 
 ## Running the pipeline
 
@@ -70,10 +80,14 @@ uv run python -m pluvial.cli snap-streets
 # 3. Pull NOAA moisture history + current drought class (free, no key needed)
 uv run python -m pluvial.cli sync-moisture
 
-# 4. Bulk-profile the study area through Mireye (spends credits — quotes first, see §9 budget)
+# 4. Copy parsed 311 complaints + street segments from DuckDB into the
+#    Postgres memory store (agents/backtest/reawaken query this, not DuckDB)
+uv run python -m pluvial.cli sync-complaints
+
+# 5. Bulk-profile the study area through Mireye (spends credits — quotes first, see §9 budget)
 uv run python -m pluvial.cli profile-study-area
 
-# 5. Serve the API
+# 6. Serve the API
 uv run python -m pluvial.cli serve
 ```
 
@@ -96,7 +110,7 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-16 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), and the Calibrator's outcome-harvesting and guidance-drafting logic — all pure-function tests that run without API keys.
+22 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), and the Calibrator's outcome-harvesting and guidance-drafting logic — all run without API keys. The Calibrator tests exercise real Postgres queries against a `pluvial_test` schema created and torn down automatically in the same Neon database (`DATABASE_URL` must be set); every other test is a pure-function test with no database at all.
 
 ## Current status
 
@@ -110,8 +124,9 @@ uv run pytest tests/ -v
 - **Public address-lookup surface built**: `GET /lookup?address=` geocodes via Nominatim, finds the nearest known street segment (bounding-box pre-filter + haversine), and returns its physical profile, verdict history, and a link to the county assessor — ending at the segment, never the parcel/owner, per the budget's scope line.
 - **Eval harness run live**: backtest (n=50), NYC negative control (n=10), and both ablations (`no_moisture`, `no_memory`, n=30) have real numbers — see [`docs/eval-report-2026-08-24.md`](docs/eval-report-2026-08-24.md). Headline: 78.6% precision / 30.6% recall; the `soil_usable` honesty gate held at 0% false soil claims on NYC; removing memory/precedent access roughly halves recall. NYC negative control is still only n=10 — real-scale run needs more Mireye budget headroom.
 - **Calibrator and reawakening loop run live** (design spec §5.1, Phase 6's "done when" bar). Three calibration passes recorded (`calibration` table, versions 1–3): outcome harvest, per-stratum precision, and the reporting-bias weighting are all computing against real verdicts — no threshold has crossed the precision floor yet at this sample size (n≤7 per stratum), so no guidance diff has fired. Separately, `reawaken` has now reopened **21 previously-closed verdicts** unprompted across two live passes, including 3 that flipped from `monitor`/`close` to `inspect` — concrete proof the invalidation-condition loop works end to end, not just in code. The most recent pass ran after `sync-moisture` populated 117 days of moisture history (previously empty, which meant trigger-state-based conditions couldn't be evaluated); current trigger state is `stable`, so this batch's reopenings were driven by the complaint-recurrence condition, not a moisture-state change — a live drought-break-triggered reopening is still unobserved.
+- **Memory store ported from SQLite to Neon Postgres**, with no behavior change: the full dataset (168,357 segments, 395,783 complaints, 83 verdicts, 117 days of moisture history, 3 calibration versions, 12 outcomes) was migrated and verified row-for-row, all 22 tests pass against a Postgres test schema, and the live API's `/stats`, `/queue`, `/segments/{id}`, `/verdicts`, and `/lookup` all reproduce the pre-migration data exactly. Removes the local-SQLite-file constraint that was blocking deployment.
 - Not yet built: the SSURGO `corsteel`/`corcon` field request to Mireye.
-- Not yet done: deployment to a public URL (no Fly/Render/Vercel config exists yet — the board and API only run locally so far).
+- Not yet done: deployment to a public URL (no Fly/Render/Vercel config exists yet, though the Postgres port removes the main blocker — the board and API only run locally so far).
 
 ## What we cannot know
 

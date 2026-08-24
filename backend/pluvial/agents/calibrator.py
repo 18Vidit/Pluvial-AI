@@ -16,54 +16,30 @@ reawakened cascade runs involve a model.
 """
 from __future__ import annotations
 
-import json
-import sqlite3
-from datetime import datetime, timezone
+from datetime import timedelta
+
+import psycopg
 
 from pluvial.agents.context import CascadeContext
 from pluvial.memory import dal
 from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
-def harvest_outcomes(con: sqlite3.Connection, escalation_case_types: list[str], recurrence_days: int = 30) -> int:
+def harvest_outcomes(con: psycopg.Connection, escalation_case_types: list[str], recurrence_days: int = 30) -> int:
     """Label past verdicts using the escalation/recurrence proxy from design
     spec §8: a segment that draws an escalation-type case, or a repeat
     complaint, within `recurrence_days` of the verdict counts as
     confirmed_failure. Everything else past its observation window is
     no_failure. Only labels verdicts that don't already have an outcome."""
-    unlabelled = con.execute(
-        """
-        SELECT v.verdict_id, v.segment_id, v.decided_at FROM verdicts v
-        LEFT JOIN outcomes o ON o.verdict_id = v.verdict_id
-        WHERE o.outcome_id IS NULL
-          AND julianday('now') - julianday(v.decided_at) > ?
-        """,
-        (recurrence_days,),
-    ).fetchall()
+    unlabelled = dal.unlabelled_verdicts(con, recurrence_days)
 
-    type_list = ", ".join(f"'{t}'" for t in escalation_case_types)
     n = 0
     for row in unlabelled:
-        window_end = f"+{recurrence_days} days"
-        escalated = con.execute(
-            f"""
-            SELECT case_number, incident_case_type, created_at FROM complaints
-            WHERE segment_id = ?
-              AND created_at > ?
-              AND created_at <= datetime(?, ?)
-              AND incident_case_type IN ({type_list})
-            LIMIT 1
-            """,
-            (row["segment_id"], row["decided_at"], row["decided_at"], window_end),
-        ).fetchone()
-        repeat = con.execute(
-            """
-            SELECT case_number FROM complaints
-            WHERE segment_id = ? AND created_at > ? AND created_at <= datetime(?, ?)
-            LIMIT 1
-            """,
-            (row["segment_id"], row["decided_at"], row["decided_at"], window_end),
-        ).fetchone()
+        window_end = row["decided_at"] + timedelta(days=recurrence_days)
+        escalated = dal.escalating_complaint(
+            con, row["segment_id"], row["decided_at"], window_end, escalation_case_types
+        )
+        repeat = dal.repeat_complaint(con, row["segment_id"], row["decided_at"], window_end)
 
         if escalated:
             label, outcome = "confirmed_failure", f"escalated: {escalated['incident_case_type']} ({escalated['case_number']})"
@@ -72,26 +48,18 @@ def harvest_outcomes(con: sqlite3.Connection, escalation_case_types: list[str], 
         else:
             label, outcome = "no_failure", "no escalation or recurrence observed in window"
 
-        con.execute(
-            "INSERT INTO outcomes (verdict_id, observed_outcome, label, observed_at) VALUES (?, ?, ?, ?)",
-            (row["verdict_id"], outcome, label, datetime.now(timezone.utc).isoformat()),
-        )
+        dal.record_outcome(con, row["verdict_id"], outcome, label)
         n += 1
     con.commit()
     return n
 
 
-def compute_stratified_metrics(con: sqlite3.Connection) -> dict:
+def compute_stratified_metrics(con: psycopg.Connection) -> dict:
     """Precision per (soil shrink-swell class, symptom class, trigger state
     at decision time). This is the number the Calibrator's guidance-diff
     text is grounded in, and the number the eval harness reports (design
     spec §8) — same computation, different slice of time."""
-    rows = con.execute(
-        """
-        SELECT v.verdict_id, v.disposition, v.reasoning_json, v.segment_id, v.decided_at, o.label
-        FROM verdicts v JOIN outcomes o ON o.verdict_id = v.verdict_id
-        """
-    ).fetchall()
+    rows = dal.verdicts_with_outcomes(con)
 
     strata: dict[tuple[str, str], dict[str, int]] = {}
     for r in rows:
@@ -145,23 +113,16 @@ def draft_guidance_diff(metrics: dict, precision_floor: float = 0.4) -> str:
     return "\n".join(lines)
 
 
-def compute_reporting_bias(con: sqlite3.Connection) -> dict:
+def compute_reporting_bias(con: psycopg.Connection) -> dict:
     """Design spec §4.6: 311 measures who complains, not what's broken.
     Segments in areas with fewer housing units / lower median income
     relative to their complaint volume are, if anything, UNDER-reporting —
     so a sparse complaint there should carry more weight, not less."""
-    rows = con.execute(
-        """
-        SELECT s.segment_id, COUNT(c.case_number) AS n_complaints, s.profile_json
-        FROM segments s LEFT JOIN complaints c ON c.segment_id = s.segment_id
-        WHERE s.profile_json IS NOT NULL
-        GROUP BY s.segment_id
-        """
-    ).fetchall()
+    rows = dal.segments_with_complaint_counts(con)
 
     scored = []
     for r in rows:
-        profile = json.loads(r["profile_json"]) if r["profile_json"] else {}
+        profile = r["profile_json"] or {}
         housing = _num(profile.get("housing_units_within_1km"))
         income = _num(profile.get("county_median_household_income"))
         if housing is None or housing == 0:
@@ -203,7 +164,7 @@ def _num(v) -> float | None:
         return None
 
 
-def run_calibration(con: sqlite3.Connection, escalation_case_types: list[str]) -> int:
+def run_calibration(con: psycopg.Connection, escalation_case_types: list[str]) -> int:
     n_new = harvest_outcomes(con, escalation_case_types)
     metrics = compute_stratified_metrics(con)
     diff = draft_guidance_diff(metrics)

@@ -12,13 +12,12 @@ should suppress soil claims on its own.
 """
 from __future__ import annotations
 
-import json
-import sqlite3
-
+import psycopg
 import httpx
 
 from pluvial.agents.cascade import run_cascade
 from pluvial.agents.context import CascadeContext
+from pluvial.memory import dal
 from pluvial.mireye.client import MireyeAccount, MireyeClient, QuoteExceedsCeilingError, chunk_locations
 from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
 from pluvial.mireye.profile_job import extract_batch_result
@@ -101,7 +100,7 @@ def profile_nyc_sample(
 
 
 async def run_negative_control(
-    con: sqlite3.Connection, account: MireyeAccount, profiled_sample: list[dict], guidance_version: int
+    con: psycopg.Connection, account: MireyeAccount, profiled_sample: list[dict], guidance_version: int
 ) -> dict:
     """Run the unmodified cascade over each profiled NYC point. No
     NYC-specific code path exists here or anywhere else — the point is that
@@ -114,14 +113,9 @@ async def run_negative_control(
         for i, point in enumerate(profiled_sample):
             segment_id = NYC_SYNTHETIC_ID_BASE - i
             soil_usable = is_soil_usable(point["profile"])
-            con.execute(
-                """
-                INSERT INTO segments (segment_id, name, highway_class, centroid_lat, centroid_lon,
-                                       profile_json, soil_usable, profiled_at, mireye_account)
-                VALUES (?, NULL, NULL, ?, ?, ?, ?, datetime('now'), 'nyc-negative-control')
-                ON CONFLICT(segment_id) DO NOTHING
-                """,
-                (segment_id, point["lat"], point["lon"], _to_json(point["profile"]), int(soil_usable)),
+            dal.insert_synthetic_segment(
+                con, segment_id, point["lat"], point["lon"],
+                point["profile"], soil_usable, "nyc-negative-control",
             )
             con.commit()
 
@@ -162,7 +156,3 @@ async def run_negative_control(
         "n_false_soil_claims": n_leaked,
         "results": results,
     }
-
-
-def _to_json(profile: dict) -> str:
-    return json.dumps(profile)

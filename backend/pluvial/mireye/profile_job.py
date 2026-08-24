@@ -9,9 +9,7 @@ triggers. It shards work across the team's Mireye accounts by geography
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import time
-from pathlib import Path
 from typing import Sequence
 
 from pluvial.memory import dal
@@ -55,15 +53,14 @@ def shard_by_longitude(
 
 
 def run_profiling_shard(
-    sqlite_db: Path,
     account: MireyeAccount,
     segments: Sequence[tuple[int, float, float, str | None, str | None]],
     monthly_ceiling: int,
     idempotency_salt: str = "",
     batch_size: int = 25,
 ) -> None:
-    dal.init_db(sqlite_db)
-    with dal.connect(sqlite_db) as con, MireyeClient(account, timeout=60.0) as client:
+    dal.init_db()
+    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
         for seg_id, lat, lon, name, hwy in segments:
             dal.upsert_segment(con, seg_id, name, hwy, lat, lon)
         con.commit()

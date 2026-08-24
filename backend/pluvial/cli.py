@@ -21,7 +21,7 @@ load_dotenv()
 app = typer.Typer(help="Pluvial-AI: Mireye x Houston 311 water-main-failure agent")
 
 DEFAULT_DUCKDB = Path("../data/pluvial.duckdb")
-DEFAULT_SQLITE = Path("../data/pluvial.db")
+DEFAULT_DATA_DIR = Path("../data")
 DEFAULT_RAW = Path("../data/raw/houston_311")
 DEFAULT_OSM_CACHE = Path("../data/raw/osm_streets_houston.json")
 DEFAULT_OSM_PBF = Path("../data/raw/osm/texas-latest.osm.pbf")
@@ -59,12 +59,12 @@ def snap_streets_overpass(db: Path = DEFAULT_DUCKDB, cache: Path = DEFAULT_OSM_C
 
 
 @app.command()
-def sync_complaints(duckdb_path: Path = DEFAULT_DUCKDB, sqlite_path: Path = DEFAULT_SQLITE, batch_size: int = 5000) -> None:
+def sync_complaints(duckdb_path: Path = DEFAULT_DUCKDB, batch_size: int = 5000) -> None:
     """Copy ingested 311 complaints (and their referenced street segments,
-    as unprofiled stubs) from the DuckDB warehouse into the SQLite memory
+    as unprofiled stubs) from the DuckDB warehouse into the Postgres memory
     store, so agents/backtest/reawaken can query them. Never touches a
     segment's Mireye profile if one is already cached."""
-    dal.init_db(sqlite_path)
+    dal.init_db()
     duck = duckdb.connect(str(duckdb_path))
     duck.execute("INSTALL spatial"); duck.execute("LOAD spatial")
 
@@ -76,7 +76,7 @@ def sync_complaints(duckdb_path: Path = DEFAULT_DUCKDB, sqlite_path: Path = DEFA
         FROM street_segments
         """
     ).fetchall()
-    with dal.connect(sqlite_path) as con:
+    with dal.connect() as con:
         for i in range(0, len(seg_rows), batch_size):
             dal.upsert_segment_stubs_bulk(con, seg_rows[i : i + batch_size])
     typer.echo(f"synced {len(seg_rows)} street segment stubs")
@@ -88,23 +88,22 @@ def sync_complaints(duckdb_path: Path = DEFAULT_DUCKDB, sqlite_path: Path = DEFA
         FROM complaints
         """
     ).fetchall()
-    with dal.connect(sqlite_path) as con:
+    with dal.connect() as con:
         for i in range(0, len(complaint_rows), batch_size):
             dal.upsert_complaints_bulk(con, complaint_rows[i : i + batch_size])
     typer.echo(f"synced {len(complaint_rows)} complaints")
 
 
 @app.command()
-def sync_moisture(db: Path = DEFAULT_SQLITE, lookback_days: int = 120) -> None:
+def sync_moisture(lookback_days: int = 120) -> None:
     """Pull NOAA NCEI daily precipitation and the current USDM class into memory."""
-    n = moisture_sync.sync(db, lookback_days)
+    n = moisture_sync.sync(lookback_days)
     typer.echo(f"synced {n} days of moisture history")
 
 
 @app.command()
 def profile_study_area(
     duckdb_path: Path = DEFAULT_DUCKDB,
-    sqlite_path: Path = DEFAULT_SQLITE,
     n_target: int = 2000,
     monthly_ceiling_per_account: int = 25000,
     batch_size: int = 25,
@@ -128,14 +127,13 @@ def profile_study_area(
     for account, shard in zip(accounts, shards):
         typer.echo(f"[{account.label}] {len(shard)} segments")
         run_profiling_shard(
-            sqlite_path, account, shard, monthly_ceiling_per_account,
+            account, shard, monthly_ceiling_per_account,
             idempotency_salt=idempotency_salt, batch_size=batch_size,
         )
 
 
 @app.command()
 def process_queue(
-    db: Path = DEFAULT_SQLITE,
     account_label: str = "shard-1",
     run_budget_ceiling: int = 0,
     since: str = None,
@@ -153,7 +151,7 @@ def process_queue(
         typer.echo("MIREYE_API_KEY_1 not set", err=True)
         raise typer.Exit(1)
     account = MireyeAccount(label=account_label, api_key=key)
-    with dal.connect(db) as con:
+    with dal.connect() as con:
         guidance_version = dal.latest_guidance_version(con)
         new_ids = asyncio.run(
             process_new_complaints(
@@ -165,16 +163,15 @@ def process_queue(
 
 
 @app.command()
-def calibrate(db: Path = DEFAULT_SQLITE) -> None:
+def calibrate() -> None:
     """Phase 6: run the weekly Calibrator — outcome harvest, metrics, guidance diff."""
-    with dal.connect(db) as con:
+    with dal.connect() as con:
         version = calibrator.run_calibration(con, ESCALATION_CASE_TYPES)
     typer.echo(f"calibration version {version} recorded")
 
 
 @app.command()
 def reawaken(
-    db: Path = DEFAULT_SQLITE,
     account_label: str = "shard-1",
     run_budget_ceiling: int = 200,
 ) -> None:
@@ -185,7 +182,7 @@ def reawaken(
         typer.echo("MIREYE_API_KEY_1 not set", err=True)
         raise typer.Exit(1)
     account = MireyeAccount(label=account_label, api_key=key)
-    with dal.connect(db) as con:
+    with dal.connect() as con:
         version = dal.latest_guidance_version(con)
         new_ids = asyncio.run(scan_and_reawaken(con, account, run_budget_ceiling, version))
     typer.echo(f"reawakened {len(new_ids)} verdicts: {new_ids}")
@@ -193,7 +190,6 @@ def reawaken(
 
 @app.command()
 def backtest(
-    db: Path = DEFAULT_SQLITE,
     frozen_at: str = typer.Option(..., help="ISO date/time: only complaints on/before this are fed to the cascade"),
     label_window_days: int = 30,
     run_budget_ceiling: int = 200,
@@ -211,7 +207,7 @@ def backtest(
         raise typer.Exit(1)
     account = MireyeAccount(label=account_label, api_key=key)
 
-    with dal.connect(db) as con:
+    with dal.connect() as con:
         result = asyncio.run(run_backtest(
             con, account, frozen_at, label_window_days, ESCALATION_CASE_TYPES,
             run_budget_ceiling, max_cases=max_cases, ablation=ablation,
@@ -219,14 +215,13 @@ def backtest(
 
     summary = {k: v for k, v in result.items() if k != "results"}
     typer.echo(json.dumps(summary, indent=2))
-    out_path = db.parent / f"backtest_{ablation or 'full'}_{frozen_at.replace(':', '-')}.json"
+    out_path = DEFAULT_DATA_DIR / f"backtest_{ablation or 'full'}_{frozen_at.replace(':', '-')}.json"
     out_path.write_text(json.dumps(result, indent=2, default=str))
     typer.echo(f"full per-case results (including failures) written to {out_path}")
 
 
 @app.command()
 def negative_control(
-    db: Path = DEFAULT_SQLITE,
     sample_size: int = 200,
     run_full: bool = False,
     profile_limit: int = 25,
@@ -267,12 +262,12 @@ def negative_control(
     usable_rate = expected_soil_usable_rate([p["profile"] for p in profiled])
     typer.echo(f"soil-usable rate: {usable_rate:.0%} (Houston bulk sample: ~14%)")
 
-    with dal.connect(db) as con:
+    with dal.connect() as con:
         guidance_version = dal.latest_guidance_version(con)
         result = asyncio.run(run_negative_control(con, account, profiled, guidance_version))
 
     typer.echo(json.dumps({k: v for k, v in result.items() if k != "results"}, indent=2))
-    out_path = db.parent / "negative_control_nyc.json"
+    out_path = DEFAULT_DATA_DIR / "negative_control_nyc.json"
     out_path.write_text(json.dumps(result, indent=2, default=str))
     typer.echo(f"full per-case results written to {out_path}")
 
