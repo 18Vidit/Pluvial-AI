@@ -28,7 +28,8 @@ backend/pluvial/
   memory/    Postgres schema + typed data access layer
   agents/    Triage/Investigator/Skeptic/Adjudicator, Calibrator, reawakening loop
   eval/      backtest harness, NYC negative control, ablations
-  api/       FastAPI (GET /queue, /segments/{id}, /lookup?address=, POST /reprofile/{id})
+  api/       FastAPI (GET /queue, /segments/{id}, /lookup?address=, /stats, /verdicts,
+             /verdicts/{id}; POST /reprofile/{id}, /cascade/run)
 frontend/    Next.js dispatcher board
 ```
 
