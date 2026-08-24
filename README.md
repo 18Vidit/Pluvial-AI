@@ -1,8 +1,7 @@
 # Pluvial-AI
 
 An agent that decides which of Houston's vague 311 water complaints ("brown water," "weird smell," "low pressure") are early symptoms of a main about to fail — given what the clay underneath them is doing right now — and which a crew should be sent to today.
-
-Built for the Mireye × Delhi University Build Brief. Full design rationale, dataset verification, and the physics behind the enrichment are in [`docs/superpowers/specs/2026-08-23-pluvial-design.md`](docs/superpowers/specs/2026-08-23-pluvial-design.md). The implementation plan is in [`docs/superpowers/specs/2026-08-23-pluvial-implementation-plan.md`](docs/superpowers/specs/2026-08-23-pluvial-implementation-plan.md).
+.
 
 ## Why Houston
 
