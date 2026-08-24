@@ -8,14 +8,15 @@ triggers. It shards work across the team's Mireye accounts by geography
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from pathlib import Path
 from typing import Sequence
 
-from bellwether.memory import dal
-from bellwether.mireye.client import MireyeAccount, MireyeClient, chunk_locations
-from bellwether.mireye.fields import ALL_FIELDS, is_soil_usable
+from pluvial.memory import dal
+from pluvial.mireye.client import MireyeAccount, MireyeClient, MireyeError, chunk_locations
+from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
 
 
 def select_stratified_segments(
@@ -34,7 +35,7 @@ def select_stratified_segments(
         FROM street_segments s
         JOIN complaints c ON c.segment_id = s.segment_id
         GROUP BY s.segment_id, s.name, s.highway_class, lon, lat
-        ORDER BY n_complaints DESC
+        ORDER BY n_complaints DESC, s.segment_id ASC
         LIMIT ?
         """,
         [n_target],
@@ -58,21 +59,29 @@ def run_profiling_shard(
     account: MireyeAccount,
     segments: Sequence[tuple[int, float, float, str | None, str | None]],
     monthly_ceiling: int,
+    idempotency_salt: str = "",
+    batch_size: int = 25,
 ) -> None:
     dal.init_db(sqlite_db)
-    with dal.connect(sqlite_db) as con, MireyeClient(account) as client:
+    with dal.connect(sqlite_db) as con, MireyeClient(account, timeout=60.0) as client:
         for seg_id, lat, lon, name, hwy in segments:
             dal.upsert_segment(con, seg_id, name, hwy, lat, lon)
         con.commit()
 
-        to_fetch = [(s[0], s[1], s[2]) for s in segments]
-        chunks = chunk_locations(to_fetch, size=25)
+        already_profiled = {
+            s[0] for s in segments if (cached := dal.get_segment(con, s[0])) and cached.get("profile")
+        }
+        if already_profiled:
+            print(f"[{account.label}] skipping {len(already_profiled)} already-profiled segments", flush=True)
+
+        to_fetch = [(s[0], s[1], s[2]) for s in segments if s[0] not in already_profiled]
+        chunks = chunk_locations(to_fetch, size=batch_size)
 
         total_quoted = 0
         for chunk in chunks:
             q = client.quote(ALL_FIELDS, locations=len(chunk))
             total_quoted += int(q.get("credits") or q.get("total_credits") or len(ALL_FIELDS) * len(chunk))
-        print(f"[{account.label}] quoted total for {len(to_fetch)} segments: {total_quoted} credits")
+        print(f"[{account.label}] quoted total for {len(to_fetch)} segments: {total_quoted} credits", flush=True)
         if total_quoted > monthly_ceiling:
             raise RuntimeError(
                 f"[{account.label}] quoted {total_quoted} credits exceeds ceiling {monthly_ceiling}; "
@@ -81,21 +90,34 @@ def run_profiling_shard(
 
         for i, chunk in enumerate(chunks):
             locs = [(lat, lon) for _, lat, lon in chunk]
-            resp = client.fetch_batch(ALL_FIELDS, locs, idempotency_key=f"{account.label}-profile-{i}")
+            content_key = ",".join(str(seg_id) for seg_id, _, _ in sorted(chunk))
+            digest = hashlib.sha256(content_key.encode()).hexdigest()[:16]
+            print(f"[{account.label}] fetching chunk {i + 1}/{len(chunks)} ({len(chunk)} locations)...", flush=True)
+            try:
+                resp = client.fetch_batch(
+                    ALL_FIELDS, locs, idempotency_key=f"{account.label}-profile{idempotency_salt}-{digest}"
+                )
+            except MireyeError as e:
+                # One pathological batch (e.g. a location Mireye can't
+                # resolve) shouldn't block the rest of the study area —
+                # skip it and keep going; it'll retry as a cache miss the
+                # next time this shard is run.
+                print(f"[{account.label}] chunk {i + 1}/{len(chunks)} failed, skipping: {e}", flush=True)
+                continue
             results = resp.get("results") or resp.get("locations") or []
             for (seg_id, lat, lon), result in zip(chunk, results):
-                values = _extract(result)
+                values = extract_batch_result(result)
                 soil_usable = is_soil_usable(values)
                 dal.upsert_segment(
                     con, seg_id, None, None, lat, lon,
                     profile=values, soil_usable=soil_usable, mireye_account=account.label,
                 )
             con.commit()
-            print(f"[{account.label}] profiled chunk {i + 1}/{len(chunks)}")
+            print(f"[{account.label}] profiled chunk {i + 1}/{len(chunks)}", flush=True)
             time.sleep(1.1)  # 60 req/min ceiling, one batch call per chunk
 
 
-def _extract(result: dict) -> dict:
+def extract_batch_result(result: dict) -> dict:
     if not result.get("ok", True):
         return {}
     fields = result.get("fields") or result.get("data") or {}
