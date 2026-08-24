@@ -15,9 +15,9 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from bellwether.memory import dal
-from bellwether.mireye.client import MireyeAccount, MireyeClient, QuoteExceedsCeilingError
-from bellwether.mireye.fields import ALL_FIELDS, is_soil_usable
+from pluvial.memory import dal
+from pluvial.mireye.client import MireyeAccount, MireyeClient, QuoteExceedsCeilingError
+from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
 
 
 class CreditCeilingExceeded(RuntimeError):
@@ -46,11 +46,16 @@ class MireyeToolWrapper:
         self.client = client
         self.run_budget = run_budget
 
-    def mireye_profile(self, segment_id: int, lat: float, lng: float) -> dict[str, Any]:
-        """Cache-first physical profile for a segment. Never bypassed: this
-        is the only path an agent has to Mireye."""
+    def mireye_profile(
+        self, segment_id: int, lat: float, lng: float, force_refresh: bool = False
+    ) -> dict[str, Any]:
+        """Cache-first physical profile for a segment. Never bypassed by
+        agents: this is the only path an agent has to Mireye.
+        force_refresh=True (admin reprofile only, never set by an agent)
+        skips the cache read but still goes through quote-then-charge-then-
+        fetch, so the ceiling guard still applies."""
         cached = dal.get_segment(self.con, segment_id)
-        if cached and cached.get("profile"):
+        if not force_refresh and cached and cached.get("profile"):
             return {
                 "segment_id": segment_id,
                 "profile": cached["profile"],

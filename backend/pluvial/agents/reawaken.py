@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from bellwether.agents.cascade import run_cascade
-from bellwether.agents.context import CascadeContext
-from bellwether.memory import dal
-from bellwether.mireye.client import MireyeAccount, MireyeClient
-from bellwether.mireye.wrapper import MireyeToolWrapper, RunBudget
+from pluvial.agents.cascade import run_cascade
+from pluvial.agents.context import CascadeContext
+from pluvial.agents.live import record_cascade_result
+from pluvial.memory import dal
+from pluvial.mireye.client import MireyeAccount, MireyeClient
+from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
 def _condition_currently_holds(con: sqlite3.Connection, segment_id: int, condition: dict) -> bool:
@@ -82,26 +83,9 @@ async def scan_and_reawaken(
             if verdict is None:
                 continue  # triage discarded even the reawakened case; leave prior verdict as-is
 
-            new_id = dal.record_verdict(
-                con,
-                dal.VerdictRecord(
-                    segment_id=v["segment_id"],
-                    case_numbers=case_numbers,
-                    disposition=verdict.disposition,
-                    priority=verdict.priority,
-                    reasoning={
-                        "investigator": investigator_out.model_dump() if investigator_out else None,
-                        "skeptic": skeptic_out.model_dump() if skeptic_out else None,
-                        "adjudicator_explanation": verdict.explanation,
-                    },
-                    cited_evidence=[c.model_dump() for c in verdict.decisive_evidence],
-                    rejected_counter_argument=verdict.rejected_counter_argument,
-                    invalidation_condition=(
-                        verdict.invalidation_condition.model_dump() if verdict.invalidation_condition else None
-                    ),
-                    agent_version=f"v{guidance_version}",
-                    reawakened_from=v["verdict_id"],
-                ),
+            new_id = record_cascade_result(
+                con, v["segment_id"], case_numbers, guidance_version,
+                verdict, investigator_out, skeptic_out, reawakened_from=v["verdict_id"],
             )
             con.commit()
             new_verdict_ids.append(new_id)

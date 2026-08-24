@@ -1,4 +1,4 @@
-"""Data access layer for the Bellwether memory store (SQLite).
+"""Data access layer for the Pluvial-AI memory store (SQLite).
 
 All reads/writes to memory go through here — no raw SQL anywhere else in
 the codebase, per the implementation plan. Keeping it typed and centralised
@@ -32,7 +32,13 @@ def init_db(db_path: Path) -> None:
 
 @contextmanager
 def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
-    con = sqlite3.connect(str(db_path))
+    # check_same_thread=False: the OpenAI Agents SDK dispatches sync
+    # function tools (mireye_profile, dossier_lookup, ...) onto worker
+    # threads, so a connection scoped to one CascadeContext run is
+    # legitimately used from more than one thread. There's no concurrent
+    # access within a single run — the SDK awaits each tool call — so this
+    # is safe, not a real cross-thread race.
+    con = sqlite3.connect(str(db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     try:
@@ -61,8 +67,8 @@ def upsert_segment(
                                profile_json, soil_usable, profiled_at, mireye_account)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(segment_id) DO UPDATE SET
-            name=excluded.name,
-            highway_class=excluded.highway_class,
+            name=COALESCE(excluded.name, segments.name),
+            highway_class=COALESCE(excluded.highway_class, segments.highway_class),
             profile_json=COALESCE(excluded.profile_json, segments.profile_json),
             soil_usable=COALESCE(excluded.soil_usable, segments.soil_usable),
             profiled_at=COALESCE(excluded.profiled_at, segments.profiled_at),
@@ -97,6 +103,38 @@ def unprofiled_segments(con: sqlite3.Connection, limit: int) -> list[dict[str, A
 
 
 # --- complaints --------------------------------------------------------------
+
+def upsert_segment_stubs_bulk(con: sqlite3.Connection, rows: list[tuple]) -> None:
+    """rows: (segment_id, name, highway_class, centroid_lat, centroid_lon).
+    Used to backfill the FK target for a bulk complaint sync — never
+    overwrites a profile already fetched through Mireye."""
+    con.executemany(
+        """
+        INSERT INTO segments (segment_id, name, highway_class, centroid_lat, centroid_lon)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(segment_id) DO UPDATE SET
+            name=excluded.name, highway_class=excluded.highway_class
+        """,
+        rows,
+    )
+
+
+def upsert_complaints_bulk(con: sqlite3.Connection, rows: list[tuple]) -> None:
+    """rows: (case_number, segment_id, incident_case_type, title, status,
+    latitude, longitude, created_at, closed_at)."""
+    con.executemany(
+        """
+        INSERT INTO complaints (case_number, segment_id, incident_case_type, title, status,
+                                 latitude, longitude, created_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(case_number) DO UPDATE SET
+            segment_id=excluded.segment_id, incident_case_type=excluded.incident_case_type,
+            title=excluded.title, status=excluded.status, latitude=excluded.latitude,
+            longitude=excluded.longitude, created_at=excluded.created_at, closed_at=excluded.closed_at
+        """,
+        rows,
+    )
+
 
 def neighbourhood_complaints(
     con: sqlite3.Connection, segment_id: int, days: int = 30, exclude_case: str | None = None

@@ -8,19 +8,20 @@ import duckdb
 import typer
 from dotenv import load_dotenv
 
-from bellwether.agents import calibrator
-from bellwether.agents.reawaken import scan_and_reawaken
-from bellwether.ingest import houston_311, moisture_sync, osm_pbf, osm_segments
-from bellwether.memory import dal
-from bellwether.mireye.client import MireyeAccount
-from bellwether.mireye.profile_job import run_profiling_shard, select_stratified_segments, shard_by_longitude
+from pluvial.agents import calibrator
+from pluvial.agents.live import process_new_complaints
+from pluvial.agents.reawaken import scan_and_reawaken
+from pluvial.ingest import houston_311, moisture_sync, osm_pbf, osm_segments
+from pluvial.memory import dal
+from pluvial.mireye.client import MireyeAccount
+from pluvial.mireye.profile_job import run_profiling_shard, select_stratified_segments, shard_by_longitude
 
 load_dotenv()
 
-app = typer.Typer(help="Bellwether: Mireye x Houston 311 water-main-failure agent")
+app = typer.Typer(help="Pluvial-AI: Mireye x Houston 311 water-main-failure agent")
 
-DEFAULT_DUCKDB = Path("../data/bellwether.duckdb")
-DEFAULT_SQLITE = Path("../data/bellwether.db")
+DEFAULT_DUCKDB = Path("../data/pluvial.duckdb")
+DEFAULT_SQLITE = Path("../data/pluvial.db")
 DEFAULT_RAW = Path("../data/raw/houston_311")
 DEFAULT_OSM_CACHE = Path("../data/raw/osm_streets_houston.json")
 DEFAULT_OSM_PBF = Path("../data/raw/osm/texas-latest.osm.pbf")
@@ -58,6 +59,42 @@ def snap_streets_overpass(db: Path = DEFAULT_DUCKDB, cache: Path = DEFAULT_OSM_C
 
 
 @app.command()
+def sync_complaints(duckdb_path: Path = DEFAULT_DUCKDB, sqlite_path: Path = DEFAULT_SQLITE, batch_size: int = 5000) -> None:
+    """Copy ingested 311 complaints (and their referenced street segments,
+    as unprofiled stubs) from the DuckDB warehouse into the SQLite memory
+    store, so agents/backtest/reawaken can query them. Never touches a
+    segment's Mireye profile if one is already cached."""
+    dal.init_db(sqlite_path)
+    duck = duckdb.connect(str(duckdb_path))
+    duck.execute("INSTALL spatial"); duck.execute("LOAD spatial")
+
+    seg_rows = duck.execute(
+        """
+        SELECT segment_id, name, highway_class,
+               (ST_YMin(geom) + ST_YMax(geom)) / 2 AS lat,
+               (ST_XMin(geom) + ST_XMax(geom)) / 2 AS lon
+        FROM street_segments
+        """
+    ).fetchall()
+    with dal.connect(sqlite_path) as con:
+        for i in range(0, len(seg_rows), batch_size):
+            dal.upsert_segment_stubs_bulk(con, seg_rows[i : i + batch_size])
+    typer.echo(f"synced {len(seg_rows)} street segment stubs")
+
+    complaint_rows = duck.execute(
+        """
+        SELECT case_number, segment_id, incident_case_type, title, status,
+               latitude, longitude, CAST(created_at AS VARCHAR), CAST(closed_at AS VARCHAR)
+        FROM complaints
+        """
+    ).fetchall()
+    with dal.connect(sqlite_path) as con:
+        for i in range(0, len(complaint_rows), batch_size):
+            dal.upsert_complaints_bulk(con, complaint_rows[i : i + batch_size])
+    typer.echo(f"synced {len(complaint_rows)} complaints")
+
+
+@app.command()
 def sync_moisture(db: Path = DEFAULT_SQLITE, lookback_days: int = 120) -> None:
     """Pull NOAA NCEI daily precipitation and the current USDM class into memory."""
     n = moisture_sync.sync(db, lookback_days)
@@ -70,6 +107,8 @@ def profile_study_area(
     sqlite_path: Path = DEFAULT_SQLITE,
     n_target: int = 2000,
     monthly_ceiling_per_account: int = 25000,
+    batch_size: int = 25,
+    idempotency_salt: str = "",
 ) -> None:
     """Phase 2: select a stratified sample of segments and bulk-fetch their
     Mireye profile, sharded across up to 3 accounts by geography."""
@@ -88,7 +127,41 @@ def profile_study_area(
     shards = shard_by_longitude(segments, len(accounts))
     for account, shard in zip(accounts, shards):
         typer.echo(f"[{account.label}] {len(shard)} segments")
-        run_profiling_shard(sqlite_path, account, shard, monthly_ceiling_per_account)
+        run_profiling_shard(
+            sqlite_path, account, shard, monthly_ceiling_per_account,
+            idempotency_salt=idempotency_salt, batch_size=batch_size,
+        )
+
+
+@app.command()
+def process_queue(
+    db: Path = DEFAULT_SQLITE,
+    account_label: str = "shard-1",
+    run_budget_ceiling: int = 0,
+    since: str = None,
+    until: str = None,
+    max_cases: int = 100,
+) -> None:
+    """Phase 4's production entrypoint: run the cascade over complaints that
+    don't have a verdict yet and write one for each. This is what populates
+    GET /queue and gives the Calibrator/reawaken loop something to work
+    with — nothing else calls dal.record_verdict except reawaken, which
+    needs a verdict to already exist. run_budget_ceiling=0 keeps this
+    cache-only (no live Mireye spend) unless you explicitly raise it."""
+    key = os.environ.get("MIREYE_API_KEY_1")
+    if not key:
+        typer.echo("MIREYE_API_KEY_1 not set", err=True)
+        raise typer.Exit(1)
+    account = MireyeAccount(label=account_label, api_key=key)
+    with dal.connect(db) as con:
+        guidance_version = dal.latest_guidance_version(con)
+        new_ids = asyncio.run(
+            process_new_complaints(
+                con, account, run_budget_ceiling, guidance_version,
+                since=since, until=until, max_cases=max_cases,
+            )
+        )
+    typer.echo(f"recorded {len(new_ids)} verdicts: {new_ids}")
 
 
 @app.command()
@@ -130,7 +203,7 @@ def backtest(
 ) -> None:
     """Phase 5: backtest the cascade against frozen historical complaints,
     scoring precision/recall against the escalation/recurrence proxy label."""
-    from bellwether.eval.backtest import run_backtest
+    from pluvial.eval.backtest import run_backtest
 
     key = os.environ.get("MIREYE_API_KEY_1")
     if not key:
@@ -152,27 +225,63 @@ def backtest(
 
 
 @app.command()
-def negative_control(sample_size: int = 200) -> None:
-    """Phase 5: sanity-check the NYC negative control's premise before
+def negative_control(
+    db: Path = DEFAULT_SQLITE,
+    sample_size: int = 200,
+    run_full: bool = False,
+    profile_limit: int = 25,
+    credit_ceiling: int = 1000,
+    account_label: str = "shard-1",
+) -> None:
+    """Phase 5 (design spec §8). Default: sanity-check the premise without
     spending anything — what fraction of a live NYC 311 sample even has
     usable soil data (design research found 3/12; expect a similarly low
-    rate, not Houston's 11/12)."""
-    from bellwether.eval.negative_control import expected_soil_usable_rate, pull_nyc_sample
+    rate, not Houston's 11/12). Pass --run-full to actually profile
+    `profile_limit` of those points through Mireye (quoted against
+    credit_ceiling first) and run the unmodified cascade over them,
+    reporting whether the soil_usable gate ever gets bypassed."""
+    from pluvial.eval.negative_control import expected_soil_usable_rate, pull_nyc_sample
 
     sample = pull_nyc_sample(sample_size)
     typer.echo(f"pulled {len(sample)} NYC water/sewer complaints")
-    typer.echo(
-        "NOTE: this only pulls the complaint sample. Running the full negative "
-        "control (profiling these points through Mireye and running the cascade) "
-        "is a separate step — see design spec §8 and eval/negative_control.py."
-    )
+
+    if not run_full:
+        typer.echo(
+            "NOTE: sample only, nothing spent. Pass --run-full to profile a subset "
+            "through Mireye and run the cascade — see design spec §8."
+        )
+        return
+
+    from pluvial.eval.negative_control import profile_nyc_sample, run_negative_control
+
+    key = os.environ.get("MIREYE_API_KEY_1")
+    if not key:
+        typer.echo("MIREYE_API_KEY_1 not set", err=True)
+        raise typer.Exit(1)
+    account = MireyeAccount(label=account_label, api_key=key)
+
+    subset = sample[:profile_limit]
+    profiled = profile_nyc_sample(account, subset, credit_ceiling)
+    typer.echo(f"profiled {len(profiled)} NYC points through Mireye")
+
+    usable_rate = expected_soil_usable_rate([p["profile"] for p in profiled])
+    typer.echo(f"soil-usable rate: {usable_rate:.0%} (Houston bulk sample: ~14%)")
+
+    with dal.connect(db) as con:
+        guidance_version = dal.latest_guidance_version(con)
+        result = asyncio.run(run_negative_control(con, account, profiled, guidance_version))
+
+    typer.echo(json.dumps({k: v for k, v in result.items() if k != "results"}, indent=2))
+    out_path = db.parent / "negative_control_nyc.json"
+    out_path.write_text(json.dumps(result, indent=2, default=str))
+    typer.echo(f"full per-case results written to {out_path}")
 
 
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8811) -> None:
     """Run the FastAPI backend."""
     import uvicorn
-    uvicorn.run("bellwether.api.app:app", host=host, port=port, reload=True)
+    uvicorn.run("pluvial.api.app:app", host=host, port=port, reload=True)
 
 
 if __name__ == "__main__":
