@@ -1,4 +1,4 @@
-from bellwether.mireye.fields import is_soil_usable
+from pluvial.mireye.fields import is_soil_usable
 
 
 def test_urban_land_dominant_is_unusable():

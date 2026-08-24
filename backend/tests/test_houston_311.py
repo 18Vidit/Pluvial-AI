@@ -3,7 +3,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from bellwether.ingest.houston_311 import build_clean_table, load_extract
+from pluvial.ingest.houston_311 import build_clean_table, load_extract
 
 HEADER = (
     "365 Case Number|Case Number|Incident Address|Latitude|Longitude|Status|"

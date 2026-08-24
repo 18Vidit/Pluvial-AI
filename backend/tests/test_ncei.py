@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from bellwether.ingest.ncei import compute_series
+from pluvial.ingest.ncei import compute_series
 
 
 def _rows(precip_by_offset: dict[int, float], base: date, n_days: int = 120) -> list[dict]:

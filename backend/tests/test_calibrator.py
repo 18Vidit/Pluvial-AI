@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from bellwether.agents import calibrator
-from bellwether.memory import dal
+from pluvial.agents import calibrator
+from pluvial.memory import dal
 
 ESCALATION_TYPES = ["Major Water Leak", "Water Main Valve"]
 
