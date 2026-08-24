@@ -3,7 +3,7 @@ complaints <= T through the cascade, checks the escalation/recurrence label
 at T+30d.
 
 TEMPORAL ISOLATION is the part most backtests get wrong here, because
-Bellwether's memory persists by design: a naive backtest would let the
+Pluvial-AI's memory persists by design: a naive backtest would let the
 Investigator call dossier_lookup and see verdicts or calibration notes that
 were only written AFTER T, leaking the future into the prediction. Every
 tool in agents/tools.py that reads history must be filtered to `frozen_at`.
@@ -17,11 +17,11 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
-from bellwether.agents.cascade import run_cascade
-from bellwether.agents.context import CascadeContext
-from bellwether.memory import dal
-from bellwether.mireye.client import MireyeAccount
-from bellwether.mireye.wrapper import MireyeToolWrapper, RunBudget
+from pluvial.agents.cascade import run_cascade
+from pluvial.agents.context import CascadeContext
+from pluvial.memory import dal
+from pluvial.mireye.client import MireyeAccount
+from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
 @dataclass
@@ -95,7 +95,7 @@ async def run_backtest(
     numbers and the NYC negative control); ablation='no_moisture' or
     'no_memory' runs the design spec §8 ablation study against the same
     frozen cases, so the comparison is apples-to-apples."""
-    from bellwether.mireye.client import MireyeClient
+    from pluvial.mireye.client import MireyeClient
 
     cases = build_backtest_cases(con, frozen_at, label_window_days, escalation_case_types)
     if max_cases:

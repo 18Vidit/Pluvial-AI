@@ -6,7 +6,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from bellwether.mireye.wrapper import MireyeToolWrapper, RunBudget
+from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 
 @dataclass

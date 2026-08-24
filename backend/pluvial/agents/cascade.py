@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from agents import Agent, ModelSettings, Runner
 
-from bellwether.agents.context import CascadeContext
-from bellwether.agents.guidance import compose_guidance, load_calibration_notes
-from bellwether.agents.models import InvestigatorOutput, SkepticOutput, TriageOutput, Verdict
-from bellwether.agents.tools import ALL_TOOLS
+from pluvial.agents.context import CascadeContext
+from pluvial.agents.guidance import compose_guidance, load_calibration_notes
+from pluvial.agents.models import InvestigatorOutput, SkepticOutput, TriageOutput, Verdict
+from pluvial.agents.tools import ALL_TOOLS
 
 TRIAGE_MODEL = "gpt-4o-mini"
 REASONING_MODEL = "gpt-4o"
@@ -77,7 +77,7 @@ def build_agents(con, guidance_version: int | None = None, ablation: str | None 
     """ablation: None for the real cascade, or 'no_moisture'/'no_memory' to
     run the design spec §8 ablation study — same tools, same prompts, minus
     one instruction block, so the comparison isolates what that signal adds."""
-    from bellwether.eval.ablation import apply_ablation
+    from pluvial.eval.ablation import apply_ablation
 
     notes = load_calibration_notes(con)
 
