@@ -23,7 +23,7 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # User-Agent ("python-httpx/x.x") with a 406, even though the identical
 # request succeeds with curl's UA. Identify honestly rather than spoof curl.
 REQUEST_HEADERS = {
-    "User-Agent": "Bellwether/0.1 (Mireye x Delhi University build brief; research use)",
+    "User-Agent": "Pluvial-AI/0.1 (Mireye x Delhi University build brief; research use)",
     "Accept": "*/*",
 }
 
@@ -211,6 +211,6 @@ def run(db_path: Path, cache_path: Path) -> None:
 
 if __name__ == "__main__":
     import sys
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/bellwether.duckdb")
+    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pluvial.duckdb")
     cache = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/raw/osm_streets_houston.json")
     run(db, cache)

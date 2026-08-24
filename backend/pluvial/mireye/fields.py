@@ -1,4 +1,4 @@
-"""The fixed field selection Bellwether fetches per segment.
+"""The fixed field selection Pluvial-AI fetches per segment.
 
 This list is deliberately small and named, not "everything Mireye has" —
 credits are metered per field per location (see design spec §9) and every

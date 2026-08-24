@@ -22,7 +22,7 @@ from pathlib import Path
 import duckdb
 import osmium
 
-from bellwether.ingest.osm_segments import HIGHWAY_CLASSES, HOUSTON_BBOX, SEGMENTS_TABLE
+from pluvial.ingest.osm_segments import HIGHWAY_CLASSES, HOUSTON_BBOX, SEGMENTS_TABLE
 
 # Small margin beyond the exact bbox so a way that starts just inside Houston
 # and ends just outside isn't dropped for the endpoint alone.
@@ -101,7 +101,7 @@ def load_streets_from_pbf(con: duckdb.DuckDBPyConnection, pbf_path: Path) -> int
 
 
 def run(db_path: Path, pbf_path: Path) -> None:
-    from bellwether.ingest.osm_segments import snap_complaints_to_segments
+    from pluvial.ingest.osm_segments import snap_complaints_to_segments
 
     if not pbf_path.exists():
         raise FileNotFoundError(
@@ -122,6 +122,6 @@ def run(db_path: Path, pbf_path: Path) -> None:
 
 if __name__ == "__main__":
     import sys
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/bellwether.duckdb")
+    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pluvial.duckdb")
     pbf = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/raw/osm/texas-latest.osm.pbf")
     run(db, pbf)

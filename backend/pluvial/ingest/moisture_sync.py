@@ -6,8 +6,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
-from bellwether.ingest import ncei, usdm
-from bellwether.memory import dal
+from pluvial.ingest import ncei, usdm
+from pluvial.memory import dal
 
 
 def sync(db_path: Path, lookback_days: int = 120) -> int:
@@ -31,6 +31,6 @@ def sync(db_path: Path, lookback_days: int = 120) -> int:
 
 if __name__ == "__main__":
     import sys
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/bellwether.db")
+    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pluvial.db")
     n = sync(db)
     print(f"synced {n} days of moisture history")

@@ -1,7 +1,7 @@
 [project]
-name = "bellwether"
+name = "pluvial-ai"
 version = "0.1.0"
-description = "Mireye x Houston 311 water-main-failure agent"
+description = "Pluvial-AI — Houston 311 water-main-failure triage agent"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "openai-agents>=0.1.0",
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-bellwether = "bellwether.cli:app"
+pluvial = "pluvial.cli:app"
 
 [tool.uv]
 package = true
@@ -32,4 +32,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["bellwether"]
+packages = ["pluvial"]

@@ -1,4 +1,4 @@
--- Bellwether memory store. SQLite. See design spec §5.3.
+-- Pluvial-AI memory store. SQLite. See design spec §5.3.
 --
 -- segments: one row per OSM street segment we've profiled through Mireye.
 -- The physical profile is fetched once and cached forever (§9 budget).

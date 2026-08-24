@@ -170,6 +170,6 @@ def ingest_all(db_path: Path, raw_dir: Path) -> None:
 
 if __name__ == "__main__":
     import sys
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/bellwether.duckdb")
+    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pluvial.duckdb")
     raw = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/raw/houston_311")
     ingest_all(db, raw)
