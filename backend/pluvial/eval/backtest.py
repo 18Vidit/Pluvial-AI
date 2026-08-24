@@ -39,17 +39,43 @@ def frozen_guidance_version(con: psycopg.Connection, frozen_at: str) -> int:
 
 
 def build_backtest_cases(
-    con: psycopg.Connection, frozen_at: str, label_window_days: int, escalation_case_types: list[str]
+    con: psycopg.Connection, frozen_at: str, label_window_days: int, escalation_case_types: list[str],
+    max_cases: int | None = None,
+    only_cases: list[str] | None = None,
 ) -> list[BacktestCase]:
     """Select complaints created on/before T, and compute their label from
     data strictly AFTER their own created_at + window — never from data
-    the agent could see at decision time."""
+    the agent could see at decision time.
+
+    only_cases pins the exact complaint set instead of taking the first N.
+    Re-scoring a prior run's cases is the only way to compare two runs
+    like for like, since any change to the corpus or the ordering shifts
+    which complaints "the first N" refers to.
+
+    max_cases is applied BEFORE labelling, not after. Labelling costs two
+    queries per complaint, and against a remote Postgres those are network
+    round trips: labelling the whole pre-T corpus (~390k complaints) issues
+    ~780k sequential round trips and takes hours before the first agent
+    runs. Truncating first is exactly equivalent — labelling neither
+    reorders nor filters the candidates — but turns that into 2*max_cases
+    queries. Under the old local SQLite store these were in-process calls,
+    so the cost only became visible after the move to Neon."""
     rows = dal.complaints_up_to(con, frozen_at)
+    rows = [r for r in rows if r["segment_id"] is not None]
+    if only_cases:
+        wanted = set(only_cases)
+        rows = [r for r in rows if r["case_number"] in wanted]
+        missing = wanted - {r["case_number"] for r in rows}
+        if missing:
+            raise ValueError(
+                f"{len(missing)} pinned case(s) not found on/before {frozen_at}: "
+                f"{sorted(missing)[:5]}"
+            )
+    elif max_cases:
+        rows = rows[:max_cases]
 
     cases = []
     for r in rows:
-        if r["segment_id"] is None:
-            continue
         window_end = r["created_at"] + timedelta(days=label_window_days)
         escalated = dal.escalating_complaint(
             con, r["segment_id"], r["created_at"], window_end, escalation_case_types
@@ -77,6 +103,7 @@ async def run_backtest(
     run_budget_ceiling: int,
     max_cases: int | None = None,
     ablation: str | None = None,
+    only_cases: list[str] | None = None,
 ) -> dict:
     """ablation=None runs the real cascade (used for the headline eval
     numbers and the NYC negative control); ablation='no_moisture' or
@@ -84,9 +111,10 @@ async def run_backtest(
     frozen cases, so the comparison is apples-to-apples."""
     from pluvial.mireye.client import MireyeClient
 
-    cases = build_backtest_cases(con, frozen_at, label_window_days, escalation_case_types)
-    if max_cases:
-        cases = cases[:max_cases]
+    cases = build_backtest_cases(
+        con, frozen_at, label_window_days, escalation_case_types,
+        max_cases=max_cases, only_cases=only_cases,
+    )
 
     guidance_version = frozen_guidance_version(con, frozen_at)
 

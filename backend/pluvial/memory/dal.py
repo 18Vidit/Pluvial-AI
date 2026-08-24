@@ -393,8 +393,16 @@ def segments_with_complaint_counts(con: psycopg.Connection) -> list[dict[str, An
 # --- backtest --------------------------------------------------------------
 
 def complaints_up_to(con: psycopg.Connection, frozen_at: str) -> list[dict[str, Any]]:
+    """Backtest candidates, oldest first.
+
+    case_number is a tiebreaker, not decoration: thousands of complaints
+    share an identical created_at, so ordering on created_at alone leaves
+    the row order to the engine. That made "take the first N" select a
+    different N under SQLite than under Postgres, and non-reproducible
+    across runs on either. The tiebreaker makes a backtest re-runnable."""
     rows = con.execute(
-        "SELECT * FROM complaints WHERE created_at <= %s ORDER BY created_at", (frozen_at,)
+        "SELECT * FROM complaints WHERE created_at <= %s ORDER BY created_at, case_number",
+        (frozen_at,),
     ).fetchall()
     return [dict(r) for r in rows]
 

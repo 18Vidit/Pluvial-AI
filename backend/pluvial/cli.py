@@ -196,10 +196,21 @@ def backtest(
     max_cases: int | None = None,
     ablation: str = typer.Option(None, help="None, 'no_moisture', or 'no_memory' (design spec §8)"),
     account_label: str = "shard-1",
+    rescore: Path = typer.Option(
+        None,
+        help="Path to a prior backtest JSON; re-runs that run's exact cases instead of "
+             "the first --max-cases. Use this to compare two runs like for like.",
+    ),
 ) -> None:
     """Phase 5: backtest the cascade against frozen historical complaints,
     scoring precision/recall against the escalation/recurrence proxy label."""
     from pluvial.eval.backtest import run_backtest
+
+    only_cases = None
+    if rescore:
+        prior = json.loads(rescore.read_text())
+        only_cases = [c for r in prior["results"] for c in r["case_numbers"]]
+        typer.echo(f"re-scoring {len(only_cases)} cases pinned from {rescore}")
 
     key = os.environ.get("MIREYE_API_KEY_1")
     if not key:
@@ -211,11 +222,21 @@ def backtest(
         result = asyncio.run(run_backtest(
             con, account, frozen_at, label_window_days, ESCALATION_CASE_TYPES,
             run_budget_ceiling, max_cases=max_cases, ablation=ablation,
+            only_cases=only_cases,
         ))
 
     summary = {k: v for k, v in result.items() if k != "results"}
     typer.echo(json.dumps(summary, indent=2))
-    out_path = DEFAULT_DATA_DIR / f"backtest_{ablation or 'full'}_{frozen_at.replace(':', '-')}.json"
+
+    # A re-score reads its case list from a prior run's file, so it must never
+    # write back over that file: doing so destroys the very baseline it is
+    # being compared against, and these results are expensive to reproduce.
+    stem = f"backtest_{ablation or 'full'}_{frozen_at.replace(':', '-')}"
+    if rescore:
+        stem = f"backtest_rescore_{ablation or 'full'}_{frozen_at.replace(':', '-')}"
+    out_path = DEFAULT_DATA_DIR / f"{stem}.json"
+    if rescore and out_path.resolve() == rescore.resolve():
+        raise typer.BadParameter("refusing to overwrite the --rescore baseline")
     out_path.write_text(json.dumps(result, indent=2, default=str))
     typer.echo(f"full per-case results (including failures) written to {out_path}")
 
