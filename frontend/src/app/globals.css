@@ -1,26 +1,127 @@
 @import "tailwindcss";
 
+/* ── Pluvial-AI design tokens ────────────────────────────────────────────
+   Palette derived from the subject, not from a dark-mode template: Houston
+   Vertisol clay. The ground is warm soil-black rather than blue-black, and
+   there are exactly two saturated signals, each with one job —
+   moisture (teal, water/trigger state) and oxide (rust, failure).
+   Committed dark-only: this is an instrument read in a dispatch room. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ground-900: #14100d; /* page */
+  --ground-850: #1a1511; /* sunken wells */
+  --ground-800: #221b15; /* raised surfaces, cards */
+  --ground-750: #2a2119; /* hover */
+  --ground-700: #382c20; /* borders, strata separations */
+
+  --clay: #8a6f52;       /* Vertisol B-horizon */
+  --clay-light: #b99a73; /* A-horizon */
+  --clay-deep: #5c4a37;  /* C-horizon */
+
+  --bone: #ede6db;       /* primary text — survey paper */
+  --bone-dim: #a99c8c;   /* secondary text (7.5:1 on ground-900) */
+  --bone-faint: #6f6559; /* tertiary / rules */
+
+  --moisture: #4fa8a0;      /* water, moisture trigger state */
+  --moisture-deep: #2b6d68;
+  --oxide: #c4552e;         /* failure — fills and marks only (3:1) */
+  --oxide-bright: #e4744a;  /* failure — small text (5.2:1) */
+  --ochre: #d9a441;         /* inspect tier */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-ground-900: var(--ground-900);
+  --color-ground-850: var(--ground-850);
+  --color-ground-800: var(--ground-800);
+  --color-ground-750: var(--ground-750);
+  --color-ground-700: var(--ground-700);
+  --color-clay: var(--clay);
+  --color-clay-light: var(--clay-light);
+  --color-clay-deep: var(--clay-deep);
+  --color-bone: var(--bone);
+  --color-bone-dim: var(--bone-dim);
+  --color-bone-faint: var(--bone-faint);
+  --color-moisture: var(--moisture);
+  --color-moisture-deep: var(--moisture-deep);
+  --color-oxide: var(--oxide);
+  --color-oxide-bright: var(--oxide-bright);
+  --color-ochre: var(--ochre);
+
+  --font-display: var(--font-archivo);
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--ground-900);
+  color: var(--bone);
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Display face used with restraint: heavy, tight, and only at the top of a
+   hierarchy. Archivo's proportions carry the institutional register. */
+.display {
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+}
+
+/* Field/value pairs, depths, coordinates, credit counts — the vernacular of
+   a borehole log. Tabular figures so columns never shift. */
+.data {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.eyebrow {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bone-faint);
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--moisture);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Strata wipe: each horizon reveals downward, as if the cut is being dug. */
+@keyframes strata-in {
+  from { transform: scaleY(0); opacity: 0; }
+  to { transform: scaleY(1); opacity: 1; }
+}
+@keyframes draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes pin-drop {
+  0% { transform: translateY(-18px); opacity: 0; }
+  60% { transform: translateY(2px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes rise {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-rise {
+  animation: rise 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
