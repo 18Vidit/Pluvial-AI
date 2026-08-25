@@ -268,3 +268,4 @@ def test_a_mireye_timeout_returns_what_was_already_found():
     assert exhausted is False, "the budget was fine; Mireye was slow"
     assert upstream_error and "still not resolved" in upstream_error
     assert budget.spent == len(ALL_FIELDS) * 25, "the chunk that never arrived is not charged"
+

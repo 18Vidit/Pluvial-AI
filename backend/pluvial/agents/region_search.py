@@ -278,7 +278,11 @@ async def _traverse(
         con.commit()
 
         scored.extend(level_scored)
-        levels_completed = level + 1
+        # Only count a level that actually produced cells. A level whose
+        # fetch was refused outright contributed nothing, and reporting
+        # "2 levels" for one level of data overstates the search.
+        if level_scored:
+            levels_completed = level + 1
 
         if exhausted or upstream_error or level == MAX_LEVELS - 1:
             break
@@ -321,10 +325,18 @@ async def adjudicate_survivors(
     from pluvial.ingest.stations import nearest_station
     from pluvial.mireye.wrapper import MireyeToolWrapper
 
+    from pluvial.ingest import moisture_sync
+
     out: list[dict[str, Any]] = []
     for rank, survivor in enumerate(result.survivors, start=1):
         cell = survivor.cell
         station, _ = nearest_station(cell.lat, cell.lon)
+        # Free (NOAA and the USDM feature service are both keyless) and
+        # skipped when the region is already current. Without it a survivor
+        # in an unseen metro gets adjudicated with "no moisture history
+        # available for this region", which is a gap we chose rather than
+        # one the data imposed — a live Austin search produced exactly that.
+        await asyncio.to_thread(moisture_sync.ensure_region, station.station_id, cell.lat, cell.lon)
         location_id = dal.create_location(
             con,
             query_text=f"{result.objective.label} — area {rank} of {len(result.survivors)}",

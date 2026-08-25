@@ -41,13 +41,32 @@ def init_db(database_url: str | None = None) -> None:
 
 
 @contextmanager
-def connect(database_url: str | None = None) -> Iterator[psycopg.Connection]:
+def connect(
+    database_url: str | None = None, autocommit: bool = False
+) -> Iterator[psycopg.Connection]:
+    """Open a connection to the memory store.
+
+    autocommit=True is for connections held open across long third-party
+    calls — the SSE analysis run, the chat turn, the regional traversal.
+    Neon sets `idle_in_transaction_session_timeout` to 5 minutes, and a
+    Mireye batch of 24 locations can take longer than that, so a connection
+    sitting inside an open transaction while it waits gets terminated by the
+    server. That is exactly what killed a live run: nine points were paid
+    for and none were recorded, because the write came back to a connection
+    Postgres had already closed.
+
+    Autocommit removes the open transaction rather than the wait. It is
+    honest for these paths: every write in them is already independent and
+    committed as it happens — a fetched point, a scored cell, a ruling —
+    and none is part of a group that must land atomically. Batch jobs and
+    migrations keep the default, where transactions are doing real work.
+    """
     # DATABASE_URL points at Neon's pooled (PgBouncer transaction-mode)
     # endpoint. Session-level state like search_path can leak across
     # logical connections there, so pin it explicitly on every connect
     # rather than trusting whatever a pooled backend was left with.
     url = database_url or os.environ["DATABASE_URL"]
-    con = psycopg.connect(url, row_factory=dict_row)
+    con = psycopg.connect(url, row_factory=dict_row, autocommit=autocommit)
     con.execute("SET search_path TO public")
     try:
         yield con

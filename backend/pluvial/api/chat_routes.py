@@ -82,7 +82,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[str]:
         yield stream.make("error", {"message": str(e)}).to_sse()
         return
 
-    with dal.connect() as con, pool as client:
+    with dal.connect(autocommit=True) as con, pool as client:
         location = dal.get_location(con, req.location_id)
         if location is None:
             yield stream.make("error", {"message": "unknown location"}).to_sse()
@@ -159,7 +159,7 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
     del session.pending[pending_id]
 
     if pending.kind == "search_region":
-        with dal.connect() as con, pool as client:
+        with dal.connect(autocommit=True) as con, pool as client:
             from pluvial.agents.region_search import adjudicate_survivors, run_region_search
 
             async def produce(emit) -> None:
@@ -205,7 +205,7 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
     sample_id = pending.payload["sample_id"]
     lat, lon = pending.payload["lat"], pending.payload["lon"]
 
-    with dal.connect() as con, pool as client:
+    with dal.connect(autocommit=True) as con, pool as client:
         def fetch() -> dict[str, Any]:
             resp = client.fetch_batch(ALL_FIELDS, [(lat, lon)],
                                       idempotency_key=f"chat-sample-{sample_id}")

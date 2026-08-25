@@ -62,7 +62,7 @@ def analyze_plan(req: PlanRequest) -> dict[str, Any]:
     except NoMireyeAccountConfigured as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    with dal.connect() as con, pool as client:
+    with dal.connect(autocommit=True) as con, pool as client:
         try:
             plan = analyze.plan(con, req.address, client)
         except analyze.GeocodeFailed as e:
@@ -90,7 +90,7 @@ async def _analysis_events(location_id: int, run_budget_ceiling: int) -> AsyncIt
         yield stream.make("error", {"message": str(e)}).to_sse()
         return
 
-    with dal.connect() as con, pool as client:
+    with dal.connect(autocommit=True) as con, pool as client:
         location = dal.get_location(con, location_id)
         if location is None:
             yield stream.make("error", {"message": f"no plan {location_id}; POST /analyze/plan first"}).to_sse()
@@ -247,7 +247,7 @@ def analysis_detail(location_id: int) -> dict[str, Any]:
     """Everything recorded about one analysed location: the samples with
     their raw field values and sources, and the rulings. This is what makes
     a result checkable after the stream has closed."""
-    with dal.connect() as con:
+    with dal.connect(autocommit=True) as con:
         location = dal.get_location(con, location_id)
         if location is None:
             raise HTTPException(status_code=404, detail="location not found")

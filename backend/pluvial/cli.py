@@ -348,7 +348,7 @@ def analyze_address(
     from pluvial.mireye.accounts import MireyeClientPool
 
     dal.init_db()
-    with dal.connect() as con, MireyeClientPool() as client:
+    with dal.connect(autocommit=True) as con, MireyeClientPool() as client:
         # An address that does not geocode is an ordinary outcome of typing
         # one, not a crash. A traceback here buries the one line that matters.
         try:
@@ -448,7 +448,7 @@ def search_region(
             typer.echo(f"    ruling {payload['threat']}: {payload['severity']}")
 
     async def go() -> None:
-        with dal.connect() as con, MireyeClientPool() as client:
+        with dal.connect(autocommit=True) as con, MireyeClientPool() as client:
             result = await run_region_search(con, client, query, credit_budget, stream, emit)
             if result is None:
                 return
