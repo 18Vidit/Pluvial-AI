@@ -45,6 +45,14 @@ def sync(
     return len(series)
 
 
+# NOAA's daily-summaries service publishes a few days behind real time, and
+# how far behind varies by station. Two days was tighter than NOAA's own lag,
+# so a region that was as current as it could possibly be was re-pulled on
+# every single query. A week is still far inside the 30/60/90-day antecedent
+# windows the trigger state is computed over, so nothing is lost by it.
+FRESH_ENOUGH_DAYS = 7
+
+
 def ensure_region(station: str, lat: float, lon: float, lookback_days: int = 120) -> int:
     """Sync this station only if the store has nothing recent for it.
 
@@ -54,7 +62,7 @@ def ensure_region(station: str, lat: float, lon: float, lookback_days: int = 120
     """
     with dal.connect() as con:
         latest = dal.current_trigger_state(con, region_key=station)
-    if latest is not None and (date.today() - latest["date"]).days <= 2:
+    if latest is not None and (date.today() - latest["date"]).days <= FRESH_ENOUGH_DAYS:
         return 0
     return sync(lookback_days, station=station, lat=lat, lon=lon, init=False)
 

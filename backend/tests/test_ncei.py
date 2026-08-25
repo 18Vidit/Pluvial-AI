@@ -48,3 +48,36 @@ def test_series_is_chronologically_sorted_and_complete():
     dates = [s["date"] for s in series]
     assert dates == sorted(dates)
     assert len(series) == 31
+
+
+# --- freshness guard ----------------------------------------------------------
+
+def test_freshness_window_is_wider_than_noaa_own_publication_lag():
+    """NOAA's daily-summaries service publishes several days behind real
+    time. A two-day window meant a region that was as current as it could
+    possibly be got re-pulled on every query — and a live analysis stalled
+    inside that re-pull. Seven days is still far inside the 30/60/90-day
+    antecedent windows the trigger state is computed over."""
+    from pluvial.ingest.moisture_sync import FRESH_ENOUGH_DAYS
+
+    assert FRESH_ENOUGH_DAYS >= 5
+    assert FRESH_ENOUGH_DAYS < 30, "must stay well inside the shortest antecedent window"
+
+
+def test_a_failing_noaa_does_not_strand_a_paid_analysis(monkeypatch):
+    """The moisture trigger state is a corroborator, not the basis of a
+    ruling, and the ground has already been paid for by this point."""
+    import httpx
+
+    from pluvial import analyze
+
+    def boom(*a, **k):
+        raise httpx.ConnectTimeout("NCEI unreachable")
+
+    monkeypatch.setattr(analyze.moisture_sync, "ensure_region", boom)
+    plan = analyze.AnalysisPlan(
+        location_id=1, query_text="x", label="x", lat=30.0, lon=-97.0,
+        region_key="USW00000001", station_name="test", station_distance_m=0.0,
+        samples=[], fields=[], quoted_credits=0, quote_raw={},
+    )
+    assert analyze.ensure_moisture(plan) == -1, "reports the failure rather than raising or hiding it"

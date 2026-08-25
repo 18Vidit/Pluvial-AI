@@ -170,12 +170,25 @@ def fetch_samples(
     return fetched
 
 
+class MoistureUnavailable(RuntimeError):
+    pass
+
+
 def ensure_moisture(plan: AnalysisPlan) -> int:
     """Make sure this location's region has a moisture series on file.
 
     Free (NOAA NCEI and the USDM feature service are both keyless) and
-    skipped entirely when the region was synced within the last two days,
-    so repeating a demo in the same metro costs nothing and waits on
-    nothing.
+    skipped entirely when the region is already current, so repeating a
+    query in the same metro costs nothing and waits on nothing.
+
+    Never fatal. The moisture trigger state is a corroborator, not the basis
+    of a ruling, and the agents are already told to handle its absence — so
+    a slow or failing NOAA must not strand an analysis the user has already
+    paid for. It returns -1 to say "tried and could not", which the caller
+    reports rather than hides.
     """
-    return moisture_sync.ensure_region(plan.region_key, plan.lat, plan.lon)
+    try:
+        return moisture_sync.ensure_region(plan.region_key, plan.lat, plan.lon)
+    except Exception as e:  # httpx errors, NCEI outages, malformed rows
+        print(f"[moisture] {plan.region_key} unavailable, continuing without it: {e}", flush=True)
+        return -1

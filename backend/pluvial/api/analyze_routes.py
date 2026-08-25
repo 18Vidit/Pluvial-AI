@@ -134,10 +134,23 @@ async def _analysis_events(location_id: int, run_budget_ceiling: int) -> AsyncIt
         # is exactly the impression this design exists to avoid.
         yield stream.make("stage", {"stage": "moisture", "status": "started",
                                     "label": f"resolving regional moisture history ({location['region_key']})"}).to_sse()
-        synced = await asyncio.to_thread(analyze.ensure_moisture, plan)
+        # Bounded: NOAA is free and usually quick, but it is a third-party
+        # service on the critical path of a run the user has already paid
+        # for. If it is slow, the analysis proceeds without it and says so —
+        # the trigger state is a corroborator, not the basis of a ruling.
+        try:
+            synced = await asyncio.wait_for(
+                asyncio.to_thread(analyze.ensure_moisture, plan), timeout=45,
+            )
+        except asyncio.TimeoutError:
+            synced = -1
         yield stream.make("stage", {
             "stage": "moisture", "status": "finished",
-            "label": f"synced {synced} days from NOAA" if synced else "moisture history already current",
+            "label": (
+                "moisture history unavailable — continuing without it" if synced < 0
+                else f"synced {synced} days from NOAA" if synced
+                else "moisture history already current"
+            ),
         }).to_sse()
 
         yield stream.make("stage", {"stage": "fetch", "status": "started",
