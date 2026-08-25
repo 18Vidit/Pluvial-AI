@@ -117,6 +117,27 @@ class Verdict(BaseModel):
     explanation: str = Field(description="Plain-English verdict summary for the dispatcher board card")
 
 
+class ThreatInvalidationCondition(BaseModel):
+    """Address mode's reopen condition, and deliberately narrower than
+    `InvalidationCondition`.
+
+    The 311 version carries complaint-clustering clauses. Address mode has
+    no complaint feed and no street segment to cluster on, so a condition
+    like "reopen if new complaints emerge within 100m" is not merely inert —
+    it is a promise to watch something nothing is watching. A live run
+    produced exactly that before this model existed. Removing the fields
+    makes the unkeepable promise unrepresentable rather than discouraged.
+    """
+
+    reopen_if_trigger_state_in: list[str] = Field(
+        default_factory=list,
+        description="Moisture trigger states that should reopen this ruling: drying, "
+        "sustained_dry, rewetting, stable. This is the ONLY condition that is actually "
+        "monitored, so it is the only one worth stating.",
+    )
+    plain_english: str
+
+
 class ThreatRuling(BaseModel):
     """Address mode's adjudicated output — the same contract as `Verdict`,
     carrying a threat and a severity instead of a dispatcher disposition and
@@ -127,7 +148,7 @@ class ThreatRuling(BaseModel):
     severity: Severity
     decisive_evidence: list[CitedClaim]
     rejected_counter_argument: str = Field(description="The Skeptic's strongest point and why it didn't change the ruling")
-    invalidation_condition: InvalidationCondition | None = Field(
+    invalidation_condition: ThreatInvalidationCondition | None = Field(
         default=None, description="Required when severity is anything other than 'high'"
     )
     unknowns: list[str] = Field(

@@ -93,3 +93,15 @@ def test_an_already_reopened_ruling_is_not_reopened_again(db, location):
     ids = {c["ruling_id"] for c in dal.open_rulings_with_invalidation(db)}
     assert original not in ids
     assert successor in ids
+
+
+def test_an_address_ruling_cannot_promise_to_watch_complaints():
+    """A live run produced "reopen if new complaints emerge within 100m",
+    which address mode has no feed to evaluate. The reawakening loop ignored
+    it, so the clause was inert — but it was still a promise to the user
+    that nothing was keeping. The narrower model makes it unrepresentable."""
+    from pluvial.agents.models import ThreatInvalidationCondition
+
+    fields = set(ThreatInvalidationCondition.model_fields)
+    assert fields == {"reopen_if_trigger_state_in", "plain_english"}
+    assert not any("complaint" in f for f in fields)

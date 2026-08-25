@@ -94,6 +94,13 @@ Every claim needs a field, a value, an interpretation, and the sample_id it
 was read at. Regional moisture history is the one exception and carries no
 sample_id.
 
+Check whether the points agree with each other before you argue as if they
+do. If any sampled point's soil map unit or class differs from the others,
+that is a finding in its own right — a lot straddling two map units is
+exactly what nine points exist to detect, and differential movement across
+a boundary is what actually breaks things. Use compare_samples and cite
+both sample_ids.
+
 If soil_usable is False at a point, do not make a shrink-swell, drainage,
 erodibility or hydrologic-group claim from that point. Use a different
 point that has one, or argue from karst, bedrock depth, elevation and the
@@ -167,10 +174,16 @@ unknown and what evidence would settle it (for example, a geotechnical
 boring log, or sampling further from the built-up parcel).
 
 When severity is anything other than `high`, you MUST set
-invalidation_condition: the specific trigger-state change that would
-require reopening this ruling unprompted. This is not optional — a ruling
-with no invalidation condition can never be reawakened, and reawakening is
-what makes this a watch rather than a report.
+invalidation_condition: the specific moisture trigger-state change that
+would require reopening this ruling unprompted. This is not optional — a
+ruling with no invalidation condition can never be reawakened, and
+reawakening is what makes this a watch rather than a report.
+
+The trigger state is the ONLY thing being watched. Do not write a condition
+about complaints, inspections, reports or anything else happening near the
+property: there is no such feed here, and stating one would promise a watch
+that nothing performs. `plain_english` must describe only what
+reopen_if_trigger_state_in actually says.
 """
 
 
