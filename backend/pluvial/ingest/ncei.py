@@ -16,10 +16,17 @@ import httpx
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HOUSTON_STATION = "USW00012960"  # Houston Bush Intercontinental Airport (IAH)
 
-# Desiccation/re-wetting thresholds for Houston Vertisol clay. A "long dry
-# spell" is defined against the station's own climatology, not an arbitrary
-# global cutoff: IAH averages ~50 inches (1270mm) of rain a year, so a
-# 30-day window under 10mm is a genuine anomaly, not routine Texas weather.
+# Desiccation/re-wetting thresholds for expansive clay. A "long dry spell"
+# is defined against a humid-subtropical climatology: IAH averages ~50
+# inches (1270mm) of rain a year, so a 30-day window under 10mm is a genuine
+# anomaly there, not routine weather.
+#
+# KNOWN LIMIT, stated rather than hidden: these are absolute cutoffs, so in
+# an arid region (Phoenix, ~200mm/yr) a 30-day window under 10mm is normal
+# and this will report `sustained_dry` almost year-round. That is the wrong
+# baseline, not a wrong reading — the fix is per-station climatology, which
+# needs a normals pull this build does not do. Agents are told to treat the
+# trigger state as a corroborator, never as the sole basis for a ruling.
 DRY_SPELL_30D_THRESHOLD_MM = 10.0
 REWETTING_SINGLE_DAY_MM = 15.0
 REWETTING_LOOKBACK_DAYS = 60  # must follow a dry spell to count as "rewetting"
@@ -43,7 +50,7 @@ def fetch_daily(start: date, end: date, station: str = HOUSTON_STATION) -> list[
         return r.json()
 
 
-def compute_series(raw_days: list[dict]) -> list[dict]:
+def compute_series(raw_days: list[dict], station: str = HOUSTON_STATION) -> list[dict]:
     """Turn raw NCEI rows into a dated series with rolling antecedent
     precipitation sums and a classified trigger state per day."""
     parsed = []
@@ -80,7 +87,7 @@ def compute_series(raw_days: list[dict]) -> list[dict]:
 
         out.append({
             "date": d.isoformat(),
-            "station_id": HOUSTON_STATION,
+            "station_id": station,
             "precip_mm": r["precip_mm"],
             "tmax_c": r["tmax_c"],
             "antecedent_30d_mm": round(a30, 1),

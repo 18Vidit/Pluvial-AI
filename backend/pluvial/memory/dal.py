@@ -18,6 +18,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from pluvial.memory import migrations
+
 SCHEMA_PATH = Path(__file__).parent / "schema_postgres.sql"
 
 
@@ -27,9 +29,13 @@ def now_iso() -> str:
 
 def init_db(database_url: str | None = None) -> None:
     url = database_url or os.environ["DATABASE_URL"]
-    con = psycopg.connect(url)
+    con = psycopg.connect(url, row_factory=dict_row)
     with con.cursor() as cur:
         cur.execute(SCHEMA_PATH.read_text())
+    con.commit()
+    # Schema DDL is all CREATE ... IF NOT EXISTS, so it cannot change a
+    # table that already exists. migrations.apply_all handles those.
+    migrations.apply_all(con)
     con.commit()
     con.close()
 
@@ -255,32 +261,53 @@ def complaints_by_case_numbers(con: psycopg.Connection, case_numbers: list[str])
 def upsert_moisture_day(
     con: psycopg.Connection, date: str, station_id: str, precip_mm: float | None,
     tmax_c: float | None, a30: float | None, a60: float | None, a90: float | None,
-    trigger_state: str | None, usdm_class: str | None,
+    trigger_state: str | None, usdm_class: str | None, region_key: str | None = None,
 ) -> None:
+    """region_key defaults to station_id: the series IS the station's, and
+    keeping them separate columns only matters if a region ever resolves to
+    a station under a different label."""
     con.execute(
         """
-        INSERT INTO moisture_history (date, station_id, precip_mm, tmax_c,
+        INSERT INTO moisture_history (region_key, date, station_id, precip_mm, tmax_c,
             antecedent_30d_mm, antecedent_60d_mm, antecedent_90d_mm, trigger_state, usdm_class)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT(date) DO UPDATE SET
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(region_key, date) DO UPDATE SET
+            station_id=excluded.station_id,
             precip_mm=excluded.precip_mm, tmax_c=excluded.tmax_c,
             antecedent_30d_mm=excluded.antecedent_30d_mm,
             antecedent_60d_mm=excluded.antecedent_60d_mm,
             antecedent_90d_mm=excluded.antecedent_90d_mm,
             trigger_state=excluded.trigger_state, usdm_class=excluded.usdm_class
         """,
-        (date, station_id, precip_mm, tmax_c, a30, a60, a90, trigger_state, usdm_class),
+        (region_key or station_id, date, station_id, precip_mm, tmax_c, a30, a60, a90, trigger_state, usdm_class),
     )
 
 
-def current_trigger_state(con: psycopg.Connection, as_of: str | None = None) -> Optional[dict[str, Any]]:
+def current_trigger_state(
+    con: psycopg.Connection, as_of: str | None = None, region_key: str | None = None
+) -> Optional[dict[str, Any]]:
+    """Latest moisture row for a region. region_key=None means "whatever
+    region is in the store", which is what the Houston-only triage path and
+    the backtest want; address mode always passes one."""
+    clauses, params = [], []
+    if region_key:
+        clauses.append("region_key = %s")
+        params.append(region_key)
     if as_of:
-        row = con.execute(
-            "SELECT * FROM moisture_history WHERE date <= %s ORDER BY date DESC LIMIT 1", (as_of,)
-        ).fetchone()
-    else:
-        row = con.execute("SELECT * FROM moisture_history ORDER BY date DESC LIMIT 1").fetchone()
+        clauses.append("date <= %s")
+        params.append(as_of)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row = con.execute(
+        f"SELECT * FROM moisture_history {where} ORDER BY date DESC LIMIT 1", tuple(params)
+    ).fetchone()
     return dict(row) if row else None
+
+
+def moisture_region_days(con: psycopg.Connection, region_key: str) -> int:
+    row = con.execute(
+        "SELECT COUNT(*) AS n FROM moisture_history WHERE region_key = %s", (region_key,)
+    ).fetchone()
+    return int(row["n"])
 
 
 # --- calibration ------------------------------------------------------------
@@ -568,3 +595,225 @@ def verdict_brief(con: psycopg.Connection, verdict_id: int) -> Optional[dict[str
 def get_complaint(con: psycopg.Connection, case_number: str) -> Optional[dict[str, Any]]:
     row = con.execute("SELECT * FROM complaints WHERE case_number = %s", (case_number,)).fetchone()
     return dict(row) if row else None
+
+
+# --- address mode: locations, samples, rulings -------------------------------
+
+def create_location(
+    con: psycopg.Connection, query_text: str, label: str | None,
+    lat: float, lon: float, region_key: str | None,
+) -> int:
+    cur = con.execute(
+        """
+        INSERT INTO locations (query_text, label, lat, lon, region_key, geocoded_at)
+        VALUES (%s, %s, %s, %s, %s, %s) RETURNING location_id
+        """,
+        (query_text, label, lat, lon, region_key, datetime.now(timezone.utc)),
+    )
+    return cur.fetchone()["location_id"]
+
+
+def get_location(con: psycopg.Connection, location_id: int) -> Optional[dict[str, Any]]:
+    row = con.execute("SELECT * FROM locations WHERE location_id = %s", (location_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_samples(
+    con: psycopg.Connection, location_id: int, points: list[tuple[str, float, float]]
+) -> list[int]:
+    """points: (role, lat, lon), in plan order. Rows are created unfetched —
+    the map draws the plan before any credit is spent, and `profile_json`
+    stays null until the user confirms."""
+    ids = []
+    for role, lat, lon in points:
+        cur = con.execute(
+            """
+            INSERT INTO location_samples (location_id, role, lat, lon)
+            VALUES (%s, %s, %s, %s) RETURNING sample_id
+            """,
+            (location_id, role, lat, lon),
+        )
+        ids.append(cur.fetchone()["sample_id"])
+    return ids
+
+
+def record_sample_profile(
+    con: psycopg.Connection, sample_id: int, profile: dict[str, Any],
+    soil_usable: bool, mireye_account: str | None,
+) -> None:
+    con.execute(
+        """
+        UPDATE location_samples
+        SET profile_json = %s, soil_usable = %s, mireye_account = %s, fetched_at = %s
+        WHERE sample_id = %s
+        """,
+        (Jsonb(profile), soil_usable, mireye_account, datetime.now(timezone.utc), sample_id),
+    )
+
+
+def location_samples(con: psycopg.Connection, location_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT * FROM location_samples WHERE location_id = %s ORDER BY sample_id",
+        (location_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["profile"] = d.get("profile_json")
+        out.append(d)
+    return out
+
+
+def get_sample(con: psycopg.Connection, sample_id: int) -> Optional[dict[str, Any]]:
+    row = con.execute("SELECT * FROM location_samples WHERE sample_id = %s", (sample_id,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["profile"] = d.get("profile_json")
+    return d
+
+
+@dataclass
+class ThreatRulingRecord:
+    location_id: int
+    threat: str
+    severity: str
+    reasoning: dict[str, Any]
+    cited_evidence: list[dict[str, Any]]
+    rejected_counter_argument: str | None
+    invalidation_condition: dict[str, Any] | None
+    agent_version: str
+    reawakened_from: int | None = None
+
+
+def record_threat_ruling(con: psycopg.Connection, r: ThreatRulingRecord) -> int:
+    cur = con.execute(
+        """
+        INSERT INTO threat_rulings (
+            location_id, threat, severity, reasoning_json, cited_evidence_json,
+            rejected_counter_argument, invalidation_condition_json, agent_version,
+            decided_at, reawakened_from
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING ruling_id
+        """,
+        (
+            r.location_id, r.threat, r.severity, Jsonb(r.reasoning), Jsonb(r.cited_evidence),
+            r.rejected_counter_argument,
+            Jsonb(r.invalidation_condition) if r.invalidation_condition is not None else None,
+            r.agent_version, datetime.now(timezone.utc), r.reawakened_from,
+        ),
+    )
+    return cur.fetchone()["ruling_id"]
+
+
+def location_rulings(con: psycopg.Connection, location_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT DISTINCT ON (threat) * FROM threat_rulings
+        WHERE location_id = %s ORDER BY threat, decided_at DESC
+        """,
+        (location_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["reasoning"] = d.pop("reasoning_json")
+        d["cited_evidence"] = d.pop("cited_evidence_json")
+        d["invalidation_condition"] = d.pop("invalidation_condition_json")
+        out.append(d)
+    return out
+
+
+def open_rulings_with_invalidation(con: psycopg.Connection) -> list[dict[str, Any]]:
+    """Address-mode analogue of open_verdicts_with_invalidation: rulings that
+    came back below `high` and carry a condition worth re-checking. This is
+    what turns an invalidation condition into "watch this address"."""
+    rows = con.execute(
+        """
+        SELECT r.*, l.lat, l.lon, l.label, l.region_key
+        FROM threat_rulings r JOIN locations l ON l.location_id = r.location_id
+        WHERE r.severity IN ('low', 'elevated', 'unresolved')
+          AND r.invalidation_condition_json IS NOT NULL
+          AND r.ruling_id NOT IN (
+              SELECT reawakened_from FROM threat_rulings WHERE reawakened_from IS NOT NULL
+          )
+        ORDER BY r.decided_at DESC
+        """
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["invalidation_condition"] = d["invalidation_condition_json"]
+        out.append(d)
+    return out
+
+
+# --- address mode: region search ---------------------------------------------
+
+def create_region_search(
+    con: psycopg.Connection, query_text: str, objective: dict[str, Any],
+    bbox: dict[str, float], credit_budget: int,
+) -> int:
+    cur = con.execute(
+        """
+        INSERT INTO region_searches (query_text, objective_json, bbox, credit_budget, started_at)
+        VALUES (%s, %s, %s, %s, %s) RETURNING search_id
+        """,
+        (query_text, Jsonb(objective), Jsonb(bbox), credit_budget, datetime.now(timezone.utc)),
+    )
+    return cur.fetchone()["search_id"]
+
+
+def finish_region_search(
+    con: psycopg.Connection, search_id: int, credits_spent: int, exhausted_budget: bool
+) -> None:
+    con.execute(
+        """
+        UPDATE region_searches SET credits_spent = %s, exhausted_budget = %s, finished_at = %s
+        WHERE search_id = %s
+        """,
+        (credits_spent, exhausted_budget, datetime.now(timezone.utc), search_id),
+    )
+
+
+def create_region_cell(
+    con: psycopg.Connection, search_id: int, level: int, lat: float, lon: float,
+    bbox: dict[str, float],
+) -> int:
+    cur = con.execute(
+        """
+        INSERT INTO region_cells (search_id, level, lat, lon, bbox)
+        VALUES (%s, %s, %s, %s, %s) RETURNING cell_id
+        """,
+        (search_id, level, lat, lon, Jsonb(bbox)),
+    )
+    return cur.fetchone()["cell_id"]
+
+
+def record_cell_profile(
+    con: psycopg.Connection, cell_id: int, profile: dict[str, Any],
+    soil_usable: bool, objective_score: float | None,
+) -> None:
+    con.execute(
+        """
+        UPDATE region_cells SET profile_json = %s, soil_usable = %s, objective_score = %s
+        WHERE cell_id = %s
+        """,
+        (Jsonb(profile), soil_usable, objective_score, cell_id),
+    )
+
+
+def mark_cell_subdivided(con: psycopg.Connection, cell_id: int) -> None:
+    con.execute("UPDATE region_cells SET subdivided = TRUE WHERE cell_id = %s", (cell_id,))
+
+
+def search_cells(con: psycopg.Connection, search_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT * FROM region_cells WHERE search_id = %s ORDER BY cell_id", (search_id,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["profile"] = d.get("profile_json")
+        out.append(d)
+    return out

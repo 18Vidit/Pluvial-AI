@@ -21,12 +21,15 @@ CREATE TABLE IF NOT EXISTS segments (
     mireye_account  TEXT                   -- which sharded account paid for this fetch
 );
 
--- moisture_history: city-wide daily antecedent-moisture series (NCEI) plus
--- the coarse weekly USDM corroborator from Mireye. Not per-segment: the
--- design's finding is that moisture is a temporal modulator, not a spatial
--- discriminator, inside one metro.
+-- moisture_history: daily antecedent-moisture series (NCEI) plus the coarse
+-- weekly USDM corroborator from Mireye. Not per-point: the design's finding
+-- is that moisture is a temporal modulator, not a spatial discriminator,
+-- inside one metro. It IS per-region, though — address mode can be asked
+-- about anywhere in the country — so the key is (region_key, date), where
+-- region_key is the nearest NOAA GHCN station id.
 CREATE TABLE IF NOT EXISTS moisture_history (
-    date            DATE PRIMARY KEY,
+    region_key      TEXT NOT NULL,
+    date            DATE NOT NULL,
     station_id      TEXT,
     precip_mm       DOUBLE PRECISION,
     tmax_c          DOUBLE PRECISION,
@@ -34,7 +37,8 @@ CREATE TABLE IF NOT EXISTS moisture_history (
     antecedent_60d_mm DOUBLE PRECISION,
     antecedent_90d_mm DOUBLE PRECISION,
     trigger_state   TEXT,                  -- drying | sustained_dry | rewetting | stable
-    usdm_class      TEXT                   -- D0-D4, null = no drought polygon (better than D0)
+    usdm_class      TEXT,                  -- D0-D4, null = no drought polygon (better than D0)
+    PRIMARY KEY (region_key, date)
 );
 
 -- complaints: cleaned 311 records, snapped to a segment. Mirrors the DuckDB
@@ -107,3 +111,91 @@ CREATE TABLE IF NOT EXISTS precedents (
     disposition           TEXT,
     label                  TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- Address mode (docs/superpowers/specs/2026-08-25-address-mode-live-demo-design.md).
+-- Deliberately separate from the eval tables above: the backtest, the
+-- ablations and the Calibrator all read `verdicts`, and adding nullable FKs
+-- to it to carry product state would put 141 recorded verdicts at migration
+-- risk for no gain. Product rows live here; eval rows stay where they are.
+-- ---------------------------------------------------------------------------
+
+-- locations: one row per address someone asked about. region_key is the
+-- resolved nearest NOAA station id, which is what makes moisture history
+-- national rather than Houston-only.
+CREATE TABLE IF NOT EXISTS locations (
+    location_id     BIGSERIAL PRIMARY KEY,
+    query_text      TEXT NOT NULL,        -- what the user typed
+    label           TEXT,                 -- geocoder's display name
+    lat             DOUBLE PRECISION NOT NULL,
+    lon             DOUBLE PRECISION NOT NULL,
+    region_key      TEXT,                 -- nearest NOAA GHCN station id
+    geocoded_at     TIMESTAMPTZ NOT NULL
+);
+
+-- location_samples: the 9-point sample plan (1 property, 4 frontage,
+-- 4 neighbourhood). One Mireye fetch per row. sample_id is what every
+-- spatial claim cites, and what the map binds to.
+CREATE TABLE IF NOT EXISTS location_samples (
+    sample_id       BIGSERIAL PRIMARY KEY,
+    location_id     BIGINT NOT NULL REFERENCES locations(location_id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,        -- property | frontage | neighbourhood
+    lat             DOUBLE PRECISION NOT NULL,
+    lon             DOUBLE PRECISION NOT NULL,
+    profile_json    JSONB,                -- {field: {value, source}}, null until fetched
+    soil_usable     BOOLEAN,
+    mireye_account  TEXT,
+    fetched_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_location_samples_location ON location_samples(location_id);
+
+-- threat_rulings: one adjudicated ruling per (location, threat). Mirrors
+-- `verdicts` in shape so the Calibrator's reawakening machinery reads the
+-- same invalidation-condition contract, but carries severity rather than a
+-- dispatcher disposition.
+CREATE TABLE IF NOT EXISTS threat_rulings (
+    ruling_id       BIGSERIAL PRIMARY KEY,
+    location_id     BIGINT NOT NULL REFERENCES locations(location_id) ON DELETE CASCADE,
+    threat          TEXT NOT NULL,        -- foundation | service_lines | subsidence
+    severity        TEXT NOT NULL,        -- high | elevated | low | unresolved
+    reasoning_json  JSONB NOT NULL,       -- investigator + skeptic record
+    cited_evidence_json JSONB NOT NULL,   -- [{field, value, source, sample_id}, ...]
+    rejected_counter_argument TEXT,
+    invalidation_condition_json JSONB,
+    agent_version   TEXT NOT NULL,
+    decided_at      TIMESTAMPTZ NOT NULL,
+    reawakened_from BIGINT REFERENCES threat_rulings(ruling_id)
+);
+CREATE INDEX IF NOT EXISTS idx_threat_rulings_location ON threat_rulings(location_id);
+
+-- region_searches: one adaptive traversal. exhausted_budget records whether
+-- the search stopped because it converged or because it ran out of credits,
+-- so a partial result is always labelled as partial.
+CREATE TABLE IF NOT EXISTS region_searches (
+    search_id       BIGSERIAL PRIMARY KEY,
+    query_text      TEXT NOT NULL,
+    objective_json  JSONB NOT NULL,
+    bbox            JSONB NOT NULL,       -- {min_lat, min_lon, max_lat, max_lon}
+    credit_budget   INTEGER NOT NULL,
+    credits_spent   INTEGER NOT NULL DEFAULT 0,
+    exhausted_budget BOOLEAN NOT NULL DEFAULT FALSE,
+    started_at      TIMESTAMPTZ NOT NULL,
+    finished_at     TIMESTAMPTZ
+);
+
+-- region_cells: doubles as the fetch cache for one search. A subdivided
+-- cell's existing sample point is reused rather than refetched, which is
+-- where much of the adaptive saving comes from.
+CREATE TABLE IF NOT EXISTS region_cells (
+    cell_id         BIGSERIAL PRIMARY KEY,
+    search_id       BIGINT NOT NULL REFERENCES region_searches(search_id) ON DELETE CASCADE,
+    level           INTEGER NOT NULL,
+    lat             DOUBLE PRECISION NOT NULL,   -- cell centre, the sampled point
+    lon             DOUBLE PRECISION NOT NULL,
+    bbox            JSONB NOT NULL,
+    profile_json    JSONB,
+    soil_usable     BOOLEAN,
+    objective_score DOUBLE PRECISION,
+    subdivided      BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_region_cells_search ON region_cells(search_id);
