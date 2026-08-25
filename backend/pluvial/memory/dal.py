@@ -786,6 +786,20 @@ def finish_region_search(
     )
 
 
+def record_region_spend(con: psycopg.Connection, search_id: int, credits_spent: int) -> None:
+    """Record what a search has spent WITHOUT marking it finished.
+
+    Called from a finally block, so a traversal that dies partway still
+    reports its real spend. Leaving credits_spent at 0 would be the one
+    thing worse than an incomplete search: an incomplete search that claims
+    it cost nothing. finished_at stays null, which is what says it did not
+    finish."""
+    con.execute(
+        "UPDATE region_searches SET credits_spent = %s WHERE search_id = %s",
+        (credits_spent, search_id),
+    )
+
+
 def create_region_cell(
     con: psycopg.Connection, search_id: int, level: int, lat: float, lon: float,
     bbox: dict[str, float],

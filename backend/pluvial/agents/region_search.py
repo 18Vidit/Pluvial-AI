@@ -201,6 +201,51 @@ async def run_region_search(
                 f"Budget {credit_budget} credits; {len(frontier)} cells at level 0.",
     }, lane=lane))
 
+    try:
+        levels_completed, exhausted = await _traverse(
+            con, client, search_id, frontier, objective, budget, scored, stream, emit, lane,
+        )
+    finally:
+        # Whatever happened, the spend is real and gets recorded. An
+        # incomplete search that claims it cost nothing is worse than an
+        # incomplete search.
+        dal.record_region_spend(con, search_id, budget.spent)
+        con.commit()
+
+    survivors = top_survivors(scored, n=3)
+    dal.finish_region_search(con, search_id, budget.spent, exhausted)
+    con.commit()
+
+    await emit(stream.make("message", {
+        "side": "system",
+        "text": (
+            f"Searched {len(scored)} cells across {levels_completed} level(s) for {budget.spent} credits"
+            + (" — budget exhausted, these results are partial." if exhausted else ".")
+        ),
+    }, lane=lane))
+
+    return RegionSearchResult(
+        search_id=search_id,
+        objective=objective,
+        bbox=bbox,
+        scored=scored,
+        survivors=survivors,
+        credits_spent=budget.spent,
+        credit_budget=credit_budget,
+        exhausted_budget=exhausted,
+        levels_completed=levels_completed,
+    )
+
+
+async def _traverse(
+    con, client, search_id: int, frontier: list[Cell], objective: SearchObjective,
+    budget: RunBudget, scored: list[ScoredCell], stream: EventStream,
+    emit: Callable[[Event], Any], lane: str,
+) -> tuple[int, bool]:
+    """The level-by-level loop. Returns (levels_completed, budget_exhausted)."""
+    exhausted = False
+    levels_completed = 0
+
     for level in range(MAX_LEVELS):
         if not frontier:
             break
@@ -250,29 +295,7 @@ async def run_region_search(
             }, lane=lane))
         frontier = next_frontier
 
-    survivors = top_survivors(scored, n=3)
-    dal.finish_region_search(con, search_id, budget.spent, exhausted)
-    con.commit()
-
-    await emit(stream.make("message", {
-        "side": "system",
-        "text": (
-            f"Searched {len(scored)} cells across {levels_completed} level(s) for {budget.spent} credits"
-            + (" — budget exhausted, these results are partial." if exhausted else ".")
-        ),
-    }, lane=lane))
-
-    return RegionSearchResult(
-        search_id=search_id,
-        objective=objective,
-        bbox=bbox,
-        scored=scored,
-        survivors=survivors,
-        credits_spent=budget.spent,
-        credit_budget=credit_budget,
-        exhausted_budget=exhausted,
-        levels_completed=levels_completed,
-    )
+    return levels_completed, exhausted
 
 
 async def adjudicate_survivors(

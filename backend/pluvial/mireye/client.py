@@ -72,8 +72,19 @@ class MireyeClient:
             self._respect_rate_limit()
             try:
                 r = self._client.post(path, json=json_body, headers=headers)
-            except httpx.TimeoutException:
-                print(f"[mireye] timeout on {path} (attempt {attempt + 1}/{max_attempts}), retrying", flush=True)
+            except httpx.TransportError as e:
+                # TransportError, not just TimeoutException. Batch fetches are
+                # computed asynchronously and a large chunk can be polled for
+                # several minutes, which is long enough for a connection to be
+                # dropped mid-flight — an SSL EOF killed a live regional
+                # search after it had already scored a full level. Every
+                # transport failure here is on a request that is safe to
+                # repeat: fetches carry an idempotency key and quotes are free.
+                print(
+                    f"[mireye] {type(e).__name__} on {path} "
+                    f"(attempt {attempt + 1}/{max_attempts}), retrying: {e}",
+                    flush=True,
+                )
                 time.sleep(5)
                 continue
             if r.status_code == 422:
