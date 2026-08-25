@@ -39,6 +39,7 @@ DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search"
 
 from pluvial.api.analyze_routes import router as analyze_router
+from pluvial.api.chat_routes import router as chat_router
 
 app = FastAPI(title="Pluvial-AI API")
 app.add_middleware(
@@ -50,6 +51,7 @@ app.add_middleware(
 
 
 app.include_router(analyze_router)
+app.include_router(chat_router)
 
 
 @app.on_event("startup")

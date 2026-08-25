@@ -20,7 +20,13 @@ from agents import Agent, Runner
 from pluvial.agents.address_tools import ADDRESS_TOOLS, summarise_sample
 from pluvial.agents.context import AddressContext
 from pluvial.agents.guidance import ADDRESS_PHYSICS, compose_guidance, load_calibration_notes
-from pluvial.agents.models import InvestigatorOutput, SkepticOutput, Threat, ThreatRuling, TriageOutput
+from pluvial.agents.models import (
+    AddressTriageOutput,
+    InvestigatorOutput,
+    SkepticOutput,
+    Threat,
+    ThreatRuling,
+)
 
 TRIAGE_MODEL = "gpt-4o-mini"
 REASONING_MODEL = "gpt-4o"
@@ -59,17 +65,19 @@ TRIAGE_ROLE = """
 You are Triage. You see a summary of every sampled point around one
 location. You have NO tool access; do not attempt to fetch anything.
 
-Decide whether this location warrants full adjudication:
-- promote: any sampled point shows movement-prone soil, karst, shallow
-  bedrock or poor drainage, OR the sampled points disagree with each other,
-  OR the regional trigger state is drying/rewetting.
-- fast_path: the ground is unambiguously severe — High/Very High shrink-swell
-  with a dangerous trigger state, or mapped karst exposure. Adjudicate with
-  urgency; do not skip the adversarial review.
-- discard: reserved for a location where nothing can be said at all. Note
-  that a location where the soil gate fires everywhere is NOT a discard —
-  it is exactly the case that must reach an `unresolved` ruling, and
-  discarding it would silently return nothing to someone who asked.
+Someone asked about this address and the ground under it has already been
+bought, so every location is adjudicated. Your job is to set the pitch and
+point the arguments at what matters here, not to decide whether to answer:
+
+- promote: the ordinary case.
+- fast_path: the ground is unambiguously severe — High or Very High
+  shrink-swell with a drying or rewetting trigger state, or mapped karst
+  exposure. Adjudicate with urgency; do not skip the adversarial review.
+
+Use `focus` to name the threat or the specific sampled points the arguments
+should concentrate on — for example that the frontage points disagree with
+the property point, or that the soil gate has fired everywhere and the only
+answerable threat is subsidence.
 """
 
 INVESTIGATOR_ROLE = """
@@ -137,20 +145,22 @@ decisive_evidence must be drawn only from claims actually presented by the
 Investigator or the Skeptic; do not invent evidence, and carry each claim's
 sample_id through unchanged.
 
-MANDATORY: if soil_claim_vetoed is True and every soil-derived claim for
-this threat was vetoed, you MUST rule `unresolved`. You may not rule `low`.
-`low` asserts that the ground was measured and is fine; `unresolved` states
-that no soil answer exists at these points. They are different claims and
-only one of them is true.
+MANDATORY, when soil_claim_vetoed is True and every soil-derived claim for
+this threat was vetoed: you may NOT rule `low`. `low` asserts the ground was
+measured and is fine, which is precisely what did not happen. What you rule
+instead depends on what survived the veto:
 
-`subsidence` is the exception to that rule, and you must check it before
-applying it. in_karst_area and karst_exposure_class come from USGS karst
-mapping, not from an SSURGO component, so they survive the soil veto and
-are real measurements wherever they are present. If they resolve — including
-when they resolve to "not in a karst area" — you have measured evidence
-about the dominant collapse mechanism and should rule on it, saying in the
-explanation that the erosion-driven contribution was not measurable. Ruling
-`unresolved` when karst data was available and clear discards a real answer.
+- If measured non-soil evidence supports a finding — in_karst_area and
+  karst_exposure_class (USGS karst mapping, not an SSURGO component),
+  bedrock_depth_cm, elevation, the regional trigger state — rule on that
+  evidence, at `high` or `elevated` as it warrants, and say explicitly in
+  the explanation that the soil-derived contribution could not be measured.
+  Discarding a real karst reading to return `unresolved` throws away an
+  answer someone paid for.
+- If nothing survived, rule `unresolved`.
+
+`unresolved` states that no answer exists at these points. It is a finding,
+not a failure, and it must be as specific as any other ruling.
 
 When severity is `unresolved`, `unknowns` is required: name exactly what is
 unknown and what evidence would settle it (for example, a geotechnical
@@ -196,7 +206,7 @@ def build_triage_agent(con) -> Agent:
         name="Triage",
         instructions=compose_guidance(TRIAGE_ROLE, load_calibration_notes(con), physics=ADDRESS_PHYSICS),
         model=TRIAGE_MODEL,
-        output_type=TriageOutput,
+        output_type=AddressTriageOutput,
     )
 
 
@@ -233,7 +243,24 @@ def location_summary(ctx: AddressContext) -> str:
     )
 
 
-async def run_triage(ctx: AddressContext) -> TriageOutput:
+def _triage_note(triage: AddressTriageOutput) -> str:
+    """Triage's read, appended to every lane's opening brief.
+
+    Without this the shared Triage call is decorative: three cascades would
+    each rederive from the same raw summary and Triage's only effect would be
+    a line on screen. `focus` in particular is where it earns its keep — it is
+    how "the frontage points disagree with the property point" reaches the
+    argument that should be built on it.
+    """
+    lines = [f"\n\nTRIAGE ({triage.decision}): {triage.reason}"]
+    if triage.focus:
+        lines.append(f"TRIAGE FOCUS: {triage.focus}")
+    if triage.decision == "fast_path":
+        lines.append("NOTE: Triage flagged this ground as unambiguously severe. Argue with urgency.")
+    return "\n".join(lines) + "\n"
+
+
+async def run_triage(ctx: AddressContext) -> AddressTriageOutput:
     result = await Runner.run(build_triage_agent(ctx.con), location_summary(ctx), context=ctx)
     return result.final_output
 
@@ -273,13 +300,13 @@ async def run_address_cascade(
 
 async def run_all_threats(
     ctx: AddressContext, threats: tuple[str, ...] = THREATS
-) -> tuple[TriageOutput, dict[str, tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]]]:
+) -> tuple[AddressTriageOutput, dict[str, tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]]]:
     """One shared Triage, then all three cascades concurrently. The three
     arguments are genuinely independent — they cite different fields and can
     reach different severities — so there is no ordering between them and
     running them in sequence would triple the wait for no gain."""
     triage_out = await run_triage(ctx)
-    summary = location_summary(ctx)
+    summary = location_summary(ctx) + _triage_note(triage_out)
 
     results = await asyncio.gather(
         *(run_address_cascade(ctx, threat, summary) for threat in threats)

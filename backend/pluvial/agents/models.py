@@ -36,6 +36,26 @@ class TriageOutput(BaseModel):
     reason: str = Field(description="One sentence: why promote/fast_path/discard, citing the dossier summary only")
 
 
+class AddressTriageOutput(BaseModel):
+    """Address mode's triage contract, deliberately missing `discard`.
+
+    Someone typed an address and paid to have the ground under it fetched;
+    returning nothing is not an available answer. In particular a location
+    where the soil gate fires at every point is the case that most needs to
+    reach an `unresolved` ruling with named unknowns — discarding it would
+    quietly hand back silence. Enforcing that in the type rather than in the
+    prompt is the same choice made everywhere else here: a shape the model
+    cannot produce beats an instruction it can overlook.
+    """
+
+    decision: Literal["promote", "fast_path"]
+    reason: str = Field(description="One sentence: what in the sampled ground drives this, citing the summary only")
+    focus: str = Field(
+        default="",
+        description="Optional: which threat or which sampled points the arguments should concentrate on",
+    )
+
+
 class CitedClaim(BaseModel):
     """One fact used in an argument. field/value/source trace back to a
     specific Mireye field or a specific 311/NCEI/USDM record — never a bare

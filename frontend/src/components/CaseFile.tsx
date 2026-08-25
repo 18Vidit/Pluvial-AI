@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { runCascadeLive } from "@/lib/api";
-import { AgentSide, CitedClaim, LiveCascadeResult, VerdictDetail } from "@/lib/types";
+import { AgentSide, CitedClaim, VerdictDetail } from "@/lib/types";
 import { SectionCut } from "@/components/SectionCut";
 
 const STAGE_MS = 1500;
@@ -84,21 +83,22 @@ export function CaseFile({ detail }: { detail: VerdictDetail }) {
 
   const [revealed, setRevealed] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [live, setLive] = useState<LiveCascadeResult | null>(null);
-  const [liveLoading, setLiveLoading] = useState(false);
-  const [liveError, setLiveError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Live results replace the recorded ones in the same frame, so the reader
-  // compares like with like.
-  const investigator: AgentSide | null = live ? live.investigator : verdict.reasoning.investigator;
-  const skeptic: AgentSide | null = live ? live.skeptic : verdict.reasoning.skeptic;
-  const explanation = live ? live.verdict?.explanation : verdict.reasoning.adjudicator_explanation;
-  const evidence = live ? live.verdict?.decisive_evidence ?? [] : verdict.cited_evidence;
-  const rejected = live ? live.verdict?.rejected_counter_argument : verdict.rejected_counter_argument;
-  const invalidation = live ? live.verdict?.invalidation_condition : verdict.invalidation_condition;
-  const disposition = (live ? live.verdict?.disposition : verdict.disposition) ?? "close";
-  const priority = live ? live.verdict?.priority : verdict.priority;
+  /* This page is a replay of a recorded decision, and only that. It used to
+     carry a "run the agents live" button backed by POST /cascade/run, which
+     pinned the Mireye wrapper at ceiling=0 — so the one control advertised as
+     proof the system was live provably never called Mireye. It reasoned again
+     over a profile fetched months earlier. The live path is /address, where
+     the ground is bought at the moment you ask for it. */
+  const investigator: AgentSide | null = verdict.reasoning.investigator;
+  const skeptic: AgentSide | null = verdict.reasoning.skeptic;
+  const explanation = verdict.reasoning.adjudicator_explanation;
+  const evidence = verdict.cited_evidence;
+  const rejected = verdict.rejected_counter_argument;
+  const invalidation = verdict.invalidation_condition;
+  const disposition = verdict.disposition ?? "close";
+  const priority = verdict.priority;
 
   const d = DISPOSITION[disposition] ?? DISPOSITION.close;
   const soilUsable = segment?.soil_usable === 1;
@@ -130,24 +130,6 @@ export function CaseFile({ detail }: { detail: VerdictDetail }) {
     setRevealed(0);
     setPlaying(true);
   }, []);
-
-  const runLive = useCallback(async () => {
-    if (!case_numbers[0]) return;
-    setLiveLoading(true);
-    setLiveError(null);
-    setRevealed(0);
-    setPlaying(false);
-    try {
-      const result = await runCascadeLive(case_numbers[0]);
-      setLive(result);
-      setRevealed(0);
-      setPlaying(true);
-    } catch (e) {
-      setLiveError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLiveLoading(false);
-    }
-  }, [case_numbers]);
 
   const profile = segment?.profile;
   const field = (k: string) => {
@@ -252,7 +234,7 @@ export function CaseFile({ detail }: { detail: VerdictDetail }) {
           <button
             type="button"
             onClick={play}
-            disabled={playing || liveLoading}
+            disabled={playing}
             className="inline-flex items-center gap-2 rounded bg-bone px-4 py-2.5 text-sm font-medium text-ground-900 transition-colors duration-200 hover:bg-clay-light disabled:opacity-50"
           >
             <svg width="13" height="13" viewBox="0 0 15 15" fill="none" aria-hidden="true">
@@ -272,41 +254,24 @@ export function CaseFile({ detail }: { detail: VerdictDetail }) {
             Show all
           </button>
 
-          <button
-            type="button"
-            onClick={runLive}
-            disabled={liveLoading || !case_numbers[0]}
-            title="Runs the four agents against this complaint right now. Costs real model calls."
-            className="ml-auto inline-flex items-center gap-2 rounded border border-moisture/50 bg-moisture/10 px-4 py-2.5 text-sm text-moisture transition-colors duration-200 hover:bg-moisture/20 disabled:opacity-50"
+          <Link
+            href="/address"
+            title="Fetches ground data from Mireye at the moment you ask, for any US address"
+            className="ml-auto inline-flex items-center gap-2 rounded border border-moisture/50 bg-moisture/10 px-4 py-2.5 text-sm text-moisture transition-colors duration-200 hover:bg-moisture/20"
           >
-            <span className={`h-1.5 w-1.5 rounded-full bg-moisture ${liveLoading ? "animate-pulse" : ""}`} aria-hidden="true" />
-            {liveLoading ? "Agents running…" : "Run the agents live"}
-          </button>
+            <span className="h-1.5 w-1.5 rounded-full bg-moisture" aria-hidden="true" />
+            Run it live on any address
+          </Link>
         </div>
 
         <p className="mb-5 text-xs leading-relaxed text-bone-faint">
-          {live ? (
-            <span className="text-moisture">
-              Live run · these four agents just executed against this complaint. Not written
-              to the queue.
-            </span>
-          ) : (
-            <>Replay of the decision actually recorded on {new Date(verdict.decided_at).toLocaleDateString("en-US", { timeZone: "America/Chicago", dateStyle: "medium" })}. The reveal is paced for reading; the reasoning is verbatim.</>
-          )}
+          Replay of the decision actually recorded on {new Date(verdict.decided_at).toLocaleDateString("en-US", { timeZone: "America/Chicago", dateStyle: "medium" })}. The reveal is paced for reading; the reasoning is verbatim.
         </p>
-
-        {liveError && (
-          <div className="mb-5 rounded border border-oxide/40 bg-oxide/10 px-4 py-3 text-sm text-oxide-bright">
-            {liveError}
-          </div>
-        )}
 
         <ol className="space-y-3">
           <Stage n="01" name="Triage" role="gpt-4o-mini" shown={revealed >= 1} active={playing && revealed === 1}>
             <p className="text-[13.5px] leading-relaxed text-bone-dim">
-              {live?.triage
-                ? `Decision: ${live.triage.decision}. ${live.triage.reason ?? ""}`
-                : "Promoted. The complaint type and the street's dossier were enough to warrant a full investigation rather than a discard."}
+              Promoted. The complaint type and the street&apos;s dossier were enough to warrant a full investigation rather than a discard.
             </p>
           </Stage>
 
@@ -407,7 +372,7 @@ export function CaseFile({ detail }: { detail: VerdictDetail }) {
               </>
             )}
 
-            {prior_verdict && !live && (
+            {prior_verdict && (
               <p className="mt-5 rounded border border-moisture/40 bg-moisture/[0.08] px-3.5 py-2.5 text-xs leading-relaxed text-moisture">
                 Re-opened by the system on its own. It previously ruled{" "}
                 <Link href={`/case/${prior_verdict.verdict_id}`} className="underline underline-offset-2">

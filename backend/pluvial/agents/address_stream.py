@@ -23,12 +23,18 @@ from agents.items import ToolCallItem, ToolCallOutputItem
 
 from pluvial.agents.address_cascade import (
     THREATS,
+    _triage_note,
     build_address_agents,
     build_triage_agent,
     location_summary,
 )
 from pluvial.agents.context import AddressContext
-from pluvial.agents.models import InvestigatorOutput, SkepticOutput, ThreatRuling, TriageOutput
+from pluvial.agents.models import (
+    AddressTriageOutput,
+    InvestigatorOutput,
+    SkepticOutput,
+    ThreatRuling,
+)
 from pluvial.api.events import Event, EventStream
 
 Emit = Callable[[Event], Any]
@@ -157,13 +163,14 @@ async def stream_threat_cascade(
 
 async def stream_all_threats(
     ctx: AddressContext, stream: EventStream, emit: Emit, threats: tuple[str, ...] = THREATS,
-) -> tuple[TriageOutput, dict[str, tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]]]:
+) -> tuple[AddressTriageOutput, dict[str, tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]]]:
     summary = location_summary(ctx)
 
-    triage_out: TriageOutput = await _run_streamed(
+    triage_out: AddressTriageOutput = await _run_streamed(
         build_triage_agent(ctx.con), summary, ctx, "system", "triage", stream, emit,
     )
     await emit(stream.make("triage", triage_out.model_dump()))
+    summary += _triage_note(triage_out)
 
     results = await asyncio.gather(
         *(stream_threat_cascade(ctx, threat, summary, stream, emit) for threat in threats)

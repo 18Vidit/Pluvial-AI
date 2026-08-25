@@ -1,5 +1,4 @@
 import {
-  LiveCascadeResult,
   LookupResponse,
   QueueResponse,
   Stats,
@@ -36,19 +35,6 @@ export async function fetchVerdicts(limit = 60): Promise<{ verdicts: VerdictList
 export async function fetchVerdict(id: number): Promise<VerdictDetail> {
   const res = await fetch(`${API_BASE}/verdicts/${id}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`GET /verdicts/${id} failed: ${res.status}`);
-  return res.json();
-}
-
-/** Runs the four agents live. Costs real model calls, so the UI only calls
- *  this from an explicit, labelled action — never on page load. */
-export async function runCascadeLive(caseNumber: string): Promise<LiveCascadeResult> {
-  const res = await fetch(`${API_BASE}/cascade/run?case_number=${encodeURIComponent(caseNumber)}`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `Live run failed: ${res.status}`);
-  }
   return res.json();
 }
 

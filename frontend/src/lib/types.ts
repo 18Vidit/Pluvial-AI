@@ -140,22 +140,6 @@ export interface VerdictDetail {
   prior_verdict: { verdict_id: number; disposition: Disposition; priority: Priority | null; decided_at: string } | null;
 }
 
-export interface LiveCascadeResult {
-  case_number: string;
-  triage: { decision: string; reason?: string } | null;
-  investigator: AgentSide | null;
-  skeptic: AgentSide | null;
-  verdict: {
-    disposition: Disposition;
-    priority: Priority | null;
-    explanation: string;
-    decisive_evidence: CitedClaim[];
-    rejected_counter_argument: string | null;
-    invalidation_condition: InvalidationCondition | null;
-  } | null;
-  persisted: boolean;
-}
-
 export interface LookupResponse {
   matched_address: string;
   geocoded: { lat: number; lon: number };
