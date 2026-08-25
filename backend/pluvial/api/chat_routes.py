@@ -28,8 +28,7 @@ from pluvial.agents.orchestrator import OrchestratorContext, PendingSpend, build
 from pluvial.api.analyze_routes import SSE_HEADERS
 from pluvial.api.events import EventStream
 from pluvial.memory import dal
-from pluvial.mireye.accounts import NoMireyeAccountConfigured, primary_account
-from pluvial.mireye.client import MireyeClient
+from pluvial.mireye.accounts import MireyeClientPool, NoMireyeAccountConfigured
 from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
 from pluvial.mireye.profile_job import extract_batch_result
 
@@ -78,12 +77,12 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[str]:
     stream = EventStream()
 
     try:
-        account = primary_account()
+        pool = MireyeClientPool()
     except NoMireyeAccountConfigured as e:
         yield stream.make("error", {"message": str(e)}).to_sse()
         return
 
-    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+    with dal.connect() as con, pool as client:
         location = dal.get_location(con, req.location_id)
         if location is None:
             yield stream.make("error", {"message": "unknown location"}).to_sse()
@@ -150,7 +149,7 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
         return
 
     try:
-        account = primary_account()
+        pool = MireyeClientPool()
     except NoMireyeAccountConfigured as e:
         yield stream.make("error", {"message": str(e)}).to_sse()
         return
@@ -160,7 +159,7 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
     del session.pending[pending_id]
 
     if pending.kind == "search_region":
-        with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+        with dal.connect() as con, pool as client:
             from pluvial.agents.region_search import adjudicate_survivors, run_region_search
 
             async def produce(emit) -> None:
@@ -206,7 +205,7 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
     sample_id = pending.payload["sample_id"]
     lat, lon = pending.payload["lat"], pending.payload["lon"]
 
-    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+    with dal.connect() as con, pool as client:
         def fetch() -> dict[str, Any]:
             resp = client.fetch_batch(ALL_FIELDS, [(lat, lon)],
                                       idempotency_key=f"chat-sample-{sample_id}")

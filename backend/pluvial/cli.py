@@ -345,11 +345,10 @@ def analyze_address(
     from pluvial import analyze
     from pluvial.agents.address_cascade import record_rulings, run_all_threats
     from pluvial.agents.context import AddressContext
-    from pluvial.mireye.accounts import primary_account
+    from pluvial.mireye.accounts import MireyeClientPool
 
     dal.init_db()
-    account = primary_account()
-    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+    with dal.connect() as con, MireyeClientPool() as client:
         plan = analyze.plan(con, address, client)
         typer.echo(json.dumps(plan.as_dict(), indent=2, default=str))
 
@@ -413,7 +412,7 @@ def search_region(
     """
     from pluvial.agents.region_search import adjudicate_survivors, run_region_search
     from pluvial.api.events import EventStream
-    from pluvial.mireye.accounts import primary_account
+    from pluvial.mireye.accounts import MireyeClientPool
 
     if not confirm:
         typer.echo(
@@ -443,7 +442,7 @@ def search_region(
             typer.echo(f"    ruling {payload['threat']}: {payload['severity']}")
 
     async def go() -> None:
-        with dal.connect() as con, MireyeClient(primary_account(), timeout=60.0) as client:
+        with dal.connect() as con, MireyeClientPool() as client:
             result = await run_region_search(con, client, query, credit_budget, stream, emit)
             if result is None:
                 return

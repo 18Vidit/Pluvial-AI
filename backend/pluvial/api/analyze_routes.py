@@ -26,8 +26,11 @@ from pluvial.agents.address_stream import merge_to_queue, stream_all_threats
 from pluvial.agents.context import AddressContext
 from pluvial.api.events import Event, EventStream
 from pluvial.memory import dal
-from pluvial.mireye.accounts import NoMireyeAccountConfigured, primary_account
-from pluvial.mireye.client import MireyeClient
+from pluvial.mireye.accounts import (
+    AllAccountsExhausted,
+    MireyeClientPool,
+    NoMireyeAccountConfigured,
+)
 from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 
 router = APIRouter()
@@ -55,15 +58,19 @@ def analyze_plan(req: PlanRequest) -> dict[str, Any]:
     codebase computed and hoped would match.
     """
     try:
-        account = primary_account()
+        pool = MireyeClientPool()
     except NoMireyeAccountConfigured as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+    with dal.connect() as con, pool as client:
         try:
             plan = analyze.plan(con, req.address, client)
         except analyze.GeocodeFailed as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except AllAccountsExhausted as e:
+            # 402 rather than 500: nothing is broken, the month's allowance is
+            # gone. The caller should be told which it is.
+            raise HTTPException(status_code=402, detail=str(e))
     return {**plan.as_dict(), "credits_spent": 0}
 
 
@@ -78,12 +85,12 @@ async def _analysis_events(location_id: int, run_budget_ceiling: int) -> AsyncIt
     stream = EventStream()
 
     try:
-        account = primary_account()
+        pool = MireyeClientPool()
     except NoMireyeAccountConfigured as e:
         yield stream.make("error", {"message": str(e)}).to_sse()
         return
 
-    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+    with dal.connect() as con, pool as client:
         location = dal.get_location(con, location_id)
         if location is None:
             yield stream.make("error", {"message": f"no plan {location_id}; POST /analyze/plan first"}).to_sse()
