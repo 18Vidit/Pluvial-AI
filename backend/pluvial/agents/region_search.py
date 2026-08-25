@@ -40,8 +40,9 @@ from pluvial.geo.explorer import (
     top_survivors,
 )
 from pluvial.memory import dal
-from pluvial.mireye.client import MireyeClient, chunk_locations
+from pluvial.mireye.client import MireyeClient, MireyeError, chunk_locations
 from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
+from pluvial.mireye.accounts import AllAccountsExhausted
 from pluvial.mireye.profile_job import BatchLocationFailed, extract_batch_result
 from pluvial.mireye.wrapper import CreditCeilingExceeded, RunBudget
 
@@ -132,10 +133,19 @@ def _fetch_cells(
         except CreditCeilingExceeded:
             exhausted = True
             break
-        resp = client.fetch_batch(
-            ALL_FIELDS, [(lat, lon) for _, lat, lon in chunk],
-            idempotency_key=f"region-{search_id}-L{level}-{chunk[0][0]}-{len(chunk)}",
-        )
+        try:
+            resp = client.fetch_batch(
+                ALL_FIELDS, [(lat, lon) for _, lat, lon in chunk],
+                idempotency_key=f"region-{search_id}-L{level}-{chunk[0][0]}-{len(chunk)}",
+            )
+        except (MireyeError, AllAccountsExhausted) as failure:
+            # Mireye computes batches asynchronously and a 24-location chunk
+            # can sit in "still computing" for minutes; the client gives up
+            # after 30 attempts. A traversal that has already scored a level
+            # should hand back what it found, labelled partial, rather than
+            # losing it to a traceback because the next level was slow.
+            budget.spent = max(0, budget.spent - cost)
+            return fetched, exhausted, str(failure)
         results = resp.get("results") or resp.get("locations") or []
         for (index, _, _), result in zip(chunk, results):
             try:

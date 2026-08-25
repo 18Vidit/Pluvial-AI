@@ -235,3 +235,36 @@ def test_a_refused_location_stops_the_traversal_instead_of_recording_empty_groun
     assert fetched == [], "nothing may be recorded from a refused batch"
     assert exhausted is False, "the budget was fine; Mireye was not"
     assert upstream_error and "exhausted" in upstream_error.lower()
+
+
+def test_a_mireye_timeout_returns_what_was_already_found():
+    """Mireye computes batches asynchronously and a 24-location chunk can sit
+    in "still computing" for minutes before the client gives up. A traversal
+    that has already scored a level must hand back what it found, labelled
+    partial, rather than losing it to a traceback."""
+    from pluvial.agents.region_search import _fetch_cells
+    from pluvial.mireye.client import MireyeError
+    from pluvial.mireye.fields import ALL_FIELDS
+    from pluvial.mireye.wrapper import RunBudget
+
+    class _SlowThenDeadClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_batch(self, fields, locations, idempotency_key=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"results": [{"index": i, "ok": True, "fields": {"elevation": {"value": 1}}}
+                                    for i in range(len(locations))]}
+            raise MireyeError("still not resolved on /v1/fetch/batch after 30 retries")
+
+    cells = initial_grid(AUSTIN, divisions=7)      # 49 cells -> two chunks
+    client = _SlowThenDeadClient()
+    budget = RunBudget(ceiling=100_000)
+
+    fetched, exhausted, upstream_error = _fetch_cells(client, cells, budget, search_id=1)
+
+    assert len(fetched) == 25, "the first chunk's results survive"
+    assert exhausted is False, "the budget was fine; Mireye was slow"
+    assert upstream_error and "still not resolved" in upstream_error
+    assert budget.spent == len(ALL_FIELDS) * 25, "the chunk that never arrived is not charged"
