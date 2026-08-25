@@ -198,6 +198,9 @@ def _read_eval_summary() -> dict:
         ("full", "backtest_full_2026-07-15.json"),
         ("no_moisture", "backtest_no_moisture_2026-07-15.json"),
         ("no_memory", "backtest_no_memory_2026-07-15.json"),
+        # Address mode over the same pinned cases, fed only ground physics.
+        # The gap against `full` is what complaint evidence contributes.
+        ("address", "backtest_rescore_address_2026-07-15.json"),
     ):
         path = DATA_DIR / filename
         if not path.exists():
@@ -205,6 +208,9 @@ def _read_eval_summary() -> dict:
             continue
         data = json.loads(path.read_text())
         out[label] = {k: data.get(k) for k in ("n", "precision", "recall", "true_positive", "false_positive")}
+        for extra in ("severity_counts", "skipped_unprofiled", "threat"):
+            if extra in data:
+                out[label][extra] = data[extra]
 
     nyc_path = DATA_DIR / "negative_control_nyc.json"
     if nyc_path.exists():
