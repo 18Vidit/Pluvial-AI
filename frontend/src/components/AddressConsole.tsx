@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { ChatComposer, ChatTurn, PendingQuote } from "@/components/ChatComposer";
 import { GroundMap } from "@/components/GroundMap";
 import { SampleInspector } from "@/components/SampleInspector";
 import { THREAT_LABEL, ThreatLane } from "@/components/ThreatLane";
-import { chatConfirmPath, chatPath, PlanError, planAnalysis, runPath } from "@/lib/address-api";
+import { chatConfirmPath, chatPath, fetchAnalysis, PlanError, planAnalysis, runPath } from "@/lib/address-api";
 import { THREATS } from "@/lib/address-types";
-import { AnalysisState, initialState, reduce } from "@/lib/analysis-state";
+import { AnalysisState, initialState, reduce, StoredAnalysis } from "@/lib/analysis-state";
 import { streamEvents } from "@/lib/stream";
 
 /* Every one of these has actually been run, and the note says what came
@@ -37,7 +37,7 @@ function CreditCounter({ spent, quoted }: { spent: number; quoted: number | null
   );
 }
 
-export function AddressConsole() {
+export function AddressConsole({ locationId }: { locationId?: number }) {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
   const [address, setAddress] = useState("");
   const [planning, setPlanning] = useState(false);
@@ -179,6 +179,28 @@ export function AddressConsole() {
     }
   }, [quote, consumeStream, pushTurn]);
 
+  /* ?location=N reopens a finished analysis. A result you cannot return to
+     is not much of a result — and it is also what makes the rulings, the
+     map states and the chat survive a refresh mid-demo. */
+  useEffect(() => {
+    if (locationId == null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = (await fetchAnalysis(locationId)) as StoredAnalysis;
+        if (!cancelled) {
+          dispatch({ kind: "hydrate", stored });
+          setAddress(stored.location.query_text);
+        }
+      } catch (e) {
+        if (!cancelled) setPlanError(e instanceof Error ? e.message : "Could not load that analysis.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [locationId]);
+
   const selectedSample = useMemo(
     () => state.samples.find((s) => s.sample_id === selected) ?? null,
     [state.samples, selected],
@@ -256,7 +278,7 @@ export function AddressConsole() {
       </div>
 
       {/* ── the quote gate ───────────────────────────────────────────── */}
-      {plan && !state.running && !state.finished && (
+      {plan && !state.restored && !state.running && !state.finished && (
         <div className="border-b border-ground-700 bg-ground-850 px-5 py-3.5 sm:px-8">
           <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3">
             <div>
@@ -292,7 +314,11 @@ export function AddressConsole() {
           />
 
           <div className="pointer-events-none absolute left-3 top-3 rounded border border-ground-700 bg-ground-900/88 px-3 py-2 backdrop-blur-sm">
-            <CreditCounter spent={state.creditsSpent} quoted={plan?.quoted_credits ?? null} />
+            {state.restored ? (
+              <p className="eyebrow">restored from memory</p>
+            ) : (
+              <CreditCounter spent={state.creditsSpent} quoted={plan?.quoted_credits ?? null} />
+            )}
             {state.samples.length > 0 && (
               <p className="data mt-1 text-[11px] text-bone-faint">
                 {fetched}/{state.samples.length} points fetched · {usable} with soil data

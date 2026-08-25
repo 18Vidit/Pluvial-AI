@@ -22,6 +22,9 @@ import {
 
 export interface AnalysisState {
   plan: AnalysisPlan | null;
+  /** True when this view was rebuilt from memory rather than streamed. The
+   *  credit counter must not claim a run that did not happen in this tab. */
+  restored: boolean;
   /** Region-search cells. Separate from `samples` because they answer a
    *  different question — where to look next, not what is under one address. */
   cells: CellView[];
@@ -48,6 +51,7 @@ export function emptyLanes(): Record<Threat, LaneState> {
 export function initialState(): AnalysisState {
   return {
     plan: null,
+    restored: false,
     cells: [],
     cellBounds: null,
     center: null,
@@ -78,8 +82,46 @@ export function stateFromPlan(plan: AnalysisPlan): AnalysisState {
   };
 }
 
+export interface StoredAnalysis {
+  location: {
+    location_id: number;
+    query_text: string;
+    label: string;
+    lat: number;
+    lon: number;
+    region_key: string;
+  };
+  samples: {
+    sample_id: number;
+    role: string;
+    lat: number;
+    lon: number;
+    soil_usable: boolean | null;
+    profile: SampleProfile | null;
+  }[];
+  rulings: {
+    threat: Threat;
+    severity: ThreatRuling["severity"];
+    cited_evidence: AddressCitedClaim[];
+    rejected_counter_argument: string | null;
+    invalidation_condition: ThreatRuling["invalidation_condition"];
+    reasoning: {
+      investigator?: { argument?: string; claims?: AddressCitedClaim[] } | null;
+      skeptic?: {
+        argument?: string;
+        claims?: AddressCitedClaim[];
+        veto_reason?: string | null;
+        vetoed_sample_ids?: number[];
+      } | null;
+      adjudicator_explanation?: string;
+      unknowns?: string[];
+    } | null;
+  }[];
+}
+
 type Action =
   | { kind: "plan"; plan: AnalysisPlan }
+  | { kind: "hydrate"; stored: StoredAnalysis }
   | { kind: "event"; event: StreamEvent }
   | { kind: "running"; running: boolean }
   | { kind: "error"; message: string }
@@ -114,6 +156,8 @@ export function reduce(state: AnalysisState, action: Action): AnalysisState {
       return initialState();
     case "plan":
       return stateFromPlan(action.plan);
+    case "hydrate":
+      return hydrate(action.stored);
     case "running":
       return { ...state, running: action.running };
     case "error":
@@ -157,6 +201,126 @@ function boundsOf(cells: CellView[]): CellBBox | null {
     max_lat: Math.max(...cells.map((c) => c.bbox.max_lat)),
     max_lon: Math.max(...cells.map((c) => c.bbox.max_lon)),
   };
+}
+
+function bearingFrom(
+  property: { lat: number; lon: number } | undefined,
+  point: { lat: number; lon: number; role: string },
+): string | null {
+  if (!property || point.role === "property") return null;
+  const dLat = point.lat - property.lat;
+  const dLon = point.lon - property.lon;
+  // A tolerance relative to the offset itself: the frontage cross is exactly
+  // N/S/E/W, the neighbourhood ring exactly diagonal, and anything a chat
+  // turn added is somewhere in between and gets the compound label.
+  const scale = Math.max(Math.abs(dLat), Math.abs(dLon)) * 0.35;
+  const ns = dLat > scale ? "N" : dLat < -scale ? "S" : "";
+  const ew = dLon > scale ? "E" : dLon < -scale ? "W" : "";
+  return `${ns}${ew}` || null;
+}
+
+/** Rebuild the whole view from what was persisted, so a finished analysis
+ *  survives a refresh and can be linked to. Replaying the recorded claims
+ *  through the same cited/vetoed logic is what keeps the map's point states
+ *  identical to what they were when the run happened — deriving them a
+ *  second way here is how the two would drift apart. */
+export function hydrate(stored: StoredAnalysis): AnalysisState {
+  const state: AnalysisState = {
+    ...initialState(),
+    center: { lat: stored.location.lat, lon: stored.location.lon },
+    samples: stored.samples.map((s) => ({
+      sample_id: s.sample_id,
+      role: s.role as SampleView["role"],
+      // Bearing is not stored — it is a property of the plan, not of the
+      // point — so it is re-derived from the offset to the property point.
+      // Labelling every restored point "site" would make the frontage cross
+      // unreadable, which is most of what the map is for.
+      bearing: bearingFrom(stored.samples.find((o) => o.role === "property"), s),
+      lat: s.lat,
+      lon: s.lon,
+      state: s.profile ? "fetched" : "pending",
+      soil_usable: s.soil_usable,
+      profile: s.profile,
+      citedBy: [],
+      vetoedBy: [],
+    })),
+    plan: {
+      location_id: stored.location.location_id,
+      query_text: stored.location.query_text,
+      label: stored.location.label,
+      lat: stored.location.lat,
+      lon: stored.location.lon,
+      region_key: stored.location.region_key,
+      station: { name: "", distance_m: 0 },
+      samples: [],
+      n_points: stored.samples.length,
+      n_fields: 0,
+      // Zero, and read as "this was paid for in an earlier session" by the
+      // counter. Inventing a number from the field count would put a
+      // plausible, unverified figure on screen next to real ones.
+      quoted_credits: 0,
+      credits_spent: 0,
+    },
+    restored: true,
+    finished: true,
+  };
+
+  let next = state;
+  let seq = 0;
+  for (const ruling of stored.rulings) {
+    const reasoning = ruling.reasoning ?? {};
+    for (const side of ["investigator", "skeptic"] as const) {
+      for (const claim of reasoning[side]?.claims ?? []) {
+        seq += 1;
+        next = applyEvent(next, {
+          type: "claim",
+          lane: ruling.threat,
+          payload: { side, ...claim } as unknown as Record<string, unknown>,
+          credits_spent: 0,
+          seq,
+        });
+      }
+      const argument = reasoning[side]?.argument;
+      if (argument) {
+        seq += 1;
+        next = applyEvent(next, {
+          type: "message",
+          lane: ruling.threat,
+          payload: { side, text: argument },
+          credits_spent: 0,
+          seq,
+        });
+      }
+    }
+    const vetoed = reasoning.skeptic?.vetoed_sample_ids ?? [];
+    if (vetoed.length > 0) {
+      seq += 1;
+      next = applyEvent(next, {
+        type: "veto",
+        lane: ruling.threat,
+        payload: { reason: reasoning.skeptic?.veto_reason, sample_ids: vetoed },
+        credits_spent: 0,
+        seq,
+      });
+    }
+    seq += 1;
+    next = applyEvent(next, {
+      type: "ruling",
+      lane: ruling.threat,
+      payload: {
+        threat: ruling.threat,
+        severity: ruling.severity,
+        decisive_evidence: ruling.cited_evidence ?? [],
+        rejected_counter_argument: ruling.rejected_counter_argument ?? "",
+        invalidation_condition: ruling.invalidation_condition ?? null,
+        unknowns: reasoning.unknowns ?? [],
+        explanation: reasoning.adjudicator_explanation ?? "",
+      } as unknown as Record<string, unknown>,
+      credits_spent: 0,
+      seq,
+    });
+  }
+  return { ...next, finished: true, running: false };
 }
 
 export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisState {
