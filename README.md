@@ -179,6 +179,16 @@ A single address costs 207 credits (9 points × 23 fields). A metro search
 costs whatever ceiling you give it and stops there, returning partial
 results labelled as partial rather than overspending or silently truncating.
 
+**Credits and accounts.** Mireye's Build plan allows 25,000 credits a month
+per account, which is about 120 address queries or a handful of metro
+searches. Configure as many keys as you have (`MIREYE_API_KEY_1..3`):
+interactive paths fail over automatically when one account's allowance runs
+out, and remember which are spent for the life of the process. When every
+account is spent, they raise — a fetch that could not be paid for is never
+recorded as ground with nothing under it. The bulk ETL profiler still takes
+an explicit account, because its sharding is by longitude band and
+deliberate.
+
 ## Running the Houston evaluation pipeline
 
 This is only needed to reproduce the backtest and the dispatcher board.
