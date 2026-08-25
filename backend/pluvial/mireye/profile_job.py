@@ -114,8 +114,48 @@ def run_profiling_shard(
             time.sleep(1.1)  # 60 req/min ceiling, one batch call per chunk
 
 
-def extract_batch_result(result: dict) -> dict:
-    if not result.get("ok", True):
+class BatchLocationFailed(RuntimeError):
+    """One location in a batch came back not-ok.
+
+    This exists because the alternative — the original behaviour — was to
+    return {} and carry on. An empty profile is indistinguishable downstream
+    from ground that Mireye answered about but had no soil data for, so a
+    failed fetch would be recorded, drawn on the map and described to the
+    user as "no soil answer at this point". That is a false statement about
+    the world: the truth is that we did not get an answer.
+
+    Found live when the account's monthly allowance ran out mid-traversal:
+    24 cells were silently written as unmeasured ground and scored as if
+    that were a finding.
+    """
+
+    def __init__(self, error: dict):
+        self.error = error or {}
+        self.code = self.error.get("error", "unknown")
+        super().__init__(self.error.get("message") or f"batch location failed: {self.code}")
+
+
+def batch_result_error(result: dict) -> dict | None:
+    """The per-location error, or None if the location succeeded."""
+    if result.get("ok", True):
+        return None
+    return result.get("error") or {"error": "unknown", "message": "location returned ok=false"}
+
+
+def extract_batch_result(result: dict, strict: bool = False) -> dict:
+    """Normalize one batch entry into {field: {value, source}}.
+
+    strict=True raises BatchLocationFailed instead of returning {} for a
+    failed location. Interactive paths (address mode, regional search) pass
+    it, because there a failure has to reach the person who asked. The bulk
+    profiler leaves it False and skips: a single unresolvable location in a
+    1,000-segment ETL run should not abort the job, and its absence is
+    visible as an unprofiled segment.
+    """
+    error = batch_result_error(result)
+    if error is not None:
+        if strict:
+            raise BatchLocationFailed(error)
         return {}
     fields = result.get("fields") or result.get("data") or {}
     out = {}

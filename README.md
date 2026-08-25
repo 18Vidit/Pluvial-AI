@@ -1,9 +1,78 @@
 # Pluvial-AI
 
-An agent that decides which of Houston's vague 311 water complaints ("brown water," "weird smell," "low pressure") are early symptoms of a main about to fail — given what the clay underneath them is doing right now — and which a crew should be sent to today.
-.
+Enter any US address. Real ground data is fetched from Mireye at the moment
+you ask, three pairs of agents argue over it, and every claim they make is
+anchored to a specific sampled point on a map.
 
-## Why Houston
+Two surfaces share one codebase:
+
+- **Address mode** (`/address`) is the product. Nine points are planned
+  around a geocoded address, quoted, and — only after you confirm — fetched
+  live. Three independent adversarial cascades (foundation, service lines,
+  subsidence) then argue over them and stream their reasoning as it happens.
+  Nothing is precomputed and nothing is cached.
+- **The Houston 311 board** (`/board`, `/lookup`, `/case/{id}`) is the
+  evaluation proving ground: 395,783 real complaints, snapped to streets,
+  with recorded verdicts and a backtest against escalation labels. It is how
+  the reasoning is measured, not what the product does.
+
+## Address mode
+
+```
+address → geocode → 9-point sample plan → quote  (spends nothing)
+                                            ↓ you confirm
+                       live Mireye batch fetch → map paints
+                                            ↓
+                 Triage → 3 × (Investigator ⇄ Skeptic → Adjudicator)
+                                            ↓
+              foundation / service_lines / subsidence, each high | elevated
+                                            | low | unresolved
+```
+
+**Every claim carries a `sample_id`.** For a claim to anchor to a point on
+the map, the agent has to say which sampled point it read the value at.
+That one contract is what the whole visualisation falls out of: a claim
+pulses the point it cites, and a veto greys the points it invalidates.
+
+**Nine points, not one.** One property point, four frontage points on a 30m
+cross, four neighbourhood points 150m out on the diagonals. A buried service
+line runs down the street rather than through the lot centroid, and SSURGO
+map units change across short distances — so this is what lets the system
+report that a lot straddles two map units. A single point cannot produce
+that finding.
+
+**`unresolved` is a finding, not a failure.** Where the dominant SSURGO
+component is `Urban land`, no shrink-swell, drainage or hydrologic-group
+value exists. The system says so, names what is unknown and what would
+settle it, and refuses to say `low` — which would read as "safe". Houston's
+measured soil-usable rate at scale is 20.5% (207/1010 profiled segments) and
+the NYC negative control returned 0 of 10, so this is a real product
+boundary: the system answers well for suburban and rural property, which is
+where expansive-soil damage actually occurs. The `subsidence` ruling still
+resolves in urban cores, because karst fields come from USGS mapping rather
+than SSURGO components and survive the gate.
+
+**Nothing spends without a click.** `POST /analyze/plan` geocodes, plans and
+quotes, and has no code path that can fetch. `GET /analyze/run` is the only
+path that spends, and it needs a `location_id` only the plan endpoint mints.
+The conversational layer follows the same rule: its two spending tools quote
+and stop, and confirmation lives behind an endpoint the agent cannot reach.
+
+**Ask it questions.** Once the rulings land, an orchestrator agent answers
+from the evidence already fetched — why a point was vetoed, how two points
+differ, what would reopen a ruling — or proposes fetching more. "What about
+the back of the lot?" produces a quote; confirming it fetches one new point
+and the map updates.
+
+**Regional search.** `search_region` traverses a metro adaptively: a sparse
+grid, then subdivision only where the ground scores well or where neighbours
+disagree, up to three levels and a credit ceiling. The scoring objective is
+a search heuristic and never a verdict — it decides only where to spend the
+next credit, and every ruling still comes from the adversarial cascade with
+cited evidence. A grid returns *areas*, not addresses; the honest journey is
+screen the metro, shortlist a neighbourhood, then analyse a specific address.
+
+## Why Houston (for the evaluation)
 
 Houston sits on Vertisol clay that moves 1–4 inches through a wet–dry cycle. That movement — not the soil's mere existence — is what breaks pipes, and 311 complaints are the earliest, noisiest signal the city already has. Verified during design: Houston SSURGO returns usable soil data at 11/12 sampled points (vs. NYC's 3/12, where the dominant component is `Urban land` with no drainage or shrink-swell data at all).
 
@@ -23,15 +92,32 @@ Ingestor (ETL)  →  Triage  →  Investigator ⇄ Skeptic  →  Adjudicator  �
 
 ```
 backend/pluvial/
-  ingest/    Houston 311 parser, OSM street snapping, NOAA/USDM moisture sync
-  mireye/    field selection, REST client, wrapped agent-facing tool, bulk profiler
-  memory/    Postgres schema + typed data access layer
-  agents/    Triage/Investigator/Skeptic/Adjudicator, Calibrator, reawakening loop
-  eval/      backtest harness, NYC negative control, ablations
-  api/       FastAPI (GET /queue, /segments/{id}, /lookup?address=, /stats, /verdicts,
-             /verdicts/{id}; POST /reprofile/{id}, /cascade/run)
-frontend/    Next.js dispatcher board
+  analyze.py  address mode's pipeline: geocode, plan, quote, fetch
+  geo/        sampling geometry (pure), regional-search traversal rules (pure)
+  ingest/     Houston 311 parser, OSM street snapping, NOAA/USDM moisture sync,
+              bundled GHCN station list for national moisture resolution
+  mireye/     field selection, REST client, wrapped agent-facing tool, bulk profiler
+  memory/     Postgres schema, in-place migrations, typed data access layer
+  agents/     address_cascade + address_stream (product), cascade (evaluation),
+              orchestrator (chat), region_search, Calibrator, reawakening loop
+  eval/       backtest (triage and address modes), NYC negative control, ablations
+  api/        FastAPI
+                address mode  POST /analyze/plan, GET|POST /analyze/run (SSE),
+                              GET /analyze/{id}, POST /chat (SSE),
+                              POST|GET /chat/confirm (SSE)
+                evaluation    GET /queue, /segments/{id}, /lookup?address=, /stats,
+                              /verdicts, /verdicts/{id}; POST /reprofile/{id}
+frontend/src/
+  app/address/  the product surface
+  components/   GroundMap (MapLibre), ThreatLane, SampleInspector, ChatComposer,
+                QueueBoard/CaseFile/AddressLookup (the Houston evaluation view)
+  lib/          SSE client, the event→state reducer that binds claims to points
 ```
+
+`POST /cascade/run` is deliberately gone. It pinned the Mireye wrapper at
+`ceiling=0`, so the one control advertised as proof the system was live
+provably never called Mireye — it re-reasoned over a profile fetched months
+earlier at build time.
 
 ## Setup
 
@@ -63,7 +149,40 @@ pointing at a database that already has data in a local `pluvial.db` SQLite
 file from an older setup, `uv run python -m pluvial.cli_migrate` copies it
 over once, verifying row counts match before reporting success.
 
-## Running the pipeline
+## Running address mode
+
+Address mode needs nothing ingested and nothing pre-profiled — that is the
+point of it. Two processes:
+
+```bash
+cd backend && uv run python -m pluvial.cli serve     # API on :8811
+cd frontend && npm run dev                           # UI on :3000, then open /address
+```
+
+From the command line, with the same two-step gate the UI uses:
+
+```bash
+cd backend
+
+# Geocode, plan nine points, quote. Spends nothing.
+uv run python -m pluvial.cli analyze-address "100 W Alamo St, Brenham, TX"
+
+# Fetch live and run the three cascades. Spends the quoted credits.
+uv run python -m pluvial.cli analyze-address "100 W Alamo St, Brenham, TX" --confirm
+
+# Adaptive regional search, bounded by a credit ceiling it will not exceed.
+uv run python -m pluvial.cli search-region "Where near Austin is the ground better?" \
+    --credit-budget 2500 --confirm
+```
+
+A single address costs 207 credits (9 points × 23 fields). A metro search
+costs whatever ceiling you give it and stops there, returning partial
+results labelled as partial rather than overspending or silently truncating.
+
+## Running the Houston evaluation pipeline
+
+This is only needed to reproduce the backtest and the dispatcher board.
+Address mode does not depend on any of it.
 
 ```bash
 cd backend
@@ -111,7 +230,7 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-22 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), and the Calibrator's outcome-harvesting and guidance-drafting logic — all run without API keys. The Calibrator tests exercise real Postgres queries against a `pluvial_test` schema created and torn down automatically in the same Neon database (`DATABASE_URL` must be set); every other test is a pure-function test with no database at all.
+52 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), the Calibrator's outcome-harvesting and guidance-drafting logic, the nine-point sampling geometry, national station resolution, the regional-search scoring and subdivision rules, credit-ceiling enforcement, and the handling of a location Mireye refuses — all run without API keys. The Calibrator tests exercise real Postgres queries against a `pluvial_test` schema created and torn down automatically in the same Neon database (`DATABASE_URL` must be set); every other test is a pure-function test with no database at all.
 
 ## Current status
 

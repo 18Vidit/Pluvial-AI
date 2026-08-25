@@ -122,3 +122,17 @@ export interface LaneState {
   entries: LaneEntry[];
   ruling: ThreatRuling | null;
 }
+
+export interface CellBBox {
+  min_lat: number;
+  min_lon: number;
+  max_lat: number;
+  max_lon: number;
+}
+
+export interface CellView {
+  cell_id: number;
+  bbox: CellBBox;
+  score: number | null;
+  subdivided: boolean;
+}

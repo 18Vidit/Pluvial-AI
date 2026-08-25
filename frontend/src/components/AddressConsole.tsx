@@ -287,6 +287,8 @@ export function AddressConsole() {
             consequences={consequences}
             selectedSampleId={selected}
             onSelectSample={setSelected}
+            cells={state.cells}
+            cellBounds={state.cellBounds}
           />
 
           <div className="pointer-events-none absolute left-3 top-3 rounded border border-ground-700 bg-ground-900/88 px-3 py-2 backdrop-blur-sm">

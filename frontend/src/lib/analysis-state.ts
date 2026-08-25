@@ -8,6 +8,8 @@
 import {
   AddressCitedClaim,
   AnalysisPlan,
+  CellBBox,
+  CellView,
   LaneEntry,
   LaneState,
   SampleProfile,
@@ -20,6 +22,10 @@ import {
 
 export interface AnalysisState {
   plan: AnalysisPlan | null;
+  /** Region-search cells. Separate from `samples` because they answer a
+   *  different question — where to look next, not what is under one address. */
+  cells: CellView[];
+  cellBounds: CellBBox | null;
   center: { lat: number; lon: number } | null;
   samples: SampleView[];
   lanes: Record<Threat, LaneState>;
@@ -42,6 +48,8 @@ export function emptyLanes(): Record<Threat, LaneState> {
 export function initialState(): AnalysisState {
   return {
     plan: null,
+    cells: [],
+    cellBounds: null,
     center: null,
     samples: [],
     lanes: emptyLanes(),
@@ -126,6 +134,28 @@ function pushLane(state: AnalysisState, lane: string, entry: LaneEntry): Analysi
       ...state.lanes,
       [threat]: { ...state.lanes[threat], entries: [...state.lanes[threat].entries, entry] },
     },
+  };
+}
+
+function sameBox(a: CellBBox, b: CellBBox): boolean {
+  return (
+    Math.abs(a.min_lat - b.min_lat) < 1e-9 &&
+    Math.abs(a.min_lon - b.min_lon) < 1e-9 &&
+    Math.abs(a.max_lat - b.max_lat) < 1e-9 &&
+    Math.abs(a.max_lon - b.max_lon) < 1e-9
+  );
+}
+
+/** Fit the map to the whole search extent once, on the first cell — the
+ *  region is fixed for the run, and refitting per cell would make the map
+ *  twitch through the entire traversal. */
+function boundsOf(cells: CellView[]): CellBBox | null {
+  if (cells.length === 0) return null;
+  return {
+    min_lat: Math.min(...cells.map((c) => c.bbox.min_lat)),
+    min_lon: Math.min(...cells.map((c) => c.bbox.min_lon)),
+    max_lat: Math.max(...cells.map((c) => c.bbox.max_lat)),
+    max_lon: Math.max(...cells.map((c) => c.bbox.max_lon)),
   };
 }
 
@@ -301,6 +331,30 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
             ],
           },
         },
+      };
+    }
+
+    case "cell_scored": {
+      const cell: CellView = {
+        cell_id: Number(p.cell_id),
+        bbox: p.bbox as unknown as CellBBox,
+        score: p.score == null ? null : Number(p.score),
+        subdivided: false,
+      };
+      const cells = [...credits.cells.filter((c) => c.cell_id !== cell.cell_id), cell];
+      return { ...credits, cells, cellBounds: credits.cellBounds ?? boundsOf(cells) };
+    }
+
+    case "cell_subdivided": {
+      // The parent stays on the map, faded: it is what justified refining
+      // here, and dropping it would make the traversal look like it went
+      // straight to the fine grid.
+      const bbox = p.bbox as unknown as CellBBox;
+      return {
+        ...credits,
+        cells: credits.cells.map((c) =>
+          sameBox(c.bbox, bbox) ? { ...c, subdivided: true } : c,
+        ),
       };
     }
 

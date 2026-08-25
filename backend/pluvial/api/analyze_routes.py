@@ -162,8 +162,14 @@ async def _analysis_events(location_id: int, run_budget_ceiling: int) -> AsyncIt
                 }).to_sse()
             elif fetch_task.done():
                 get.cancel()
-                if fetch_task.exception():
-                    yield stream.make("error", {"message": str(fetch_task.exception())}).to_sse()
+                failure = fetch_task.exception()
+                if failure is not None:
+                    # Including a refused location. The run stops here rather
+                    # than arguing over ground it never read.
+                    yield stream.make("error", {
+                        "message": str(failure),
+                        "points_fetched": len(planned) - pending,
+                    }).to_sse()
                     return
                 break
         await fetch_task

@@ -41,6 +41,7 @@ TOOL_LABELS = {
     "compare_samples": "comparing two sampled points",
     "sample_point": "quoting one new point",
     "analyze_location": "quoting a new address",
+    "search_region": "quoting a regional search",
 }
 
 
@@ -158,6 +159,38 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
     # confirm would re-buy ground already paid for.
     del session.pending[pending_id]
 
+    if pending.kind == "search_region":
+        with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+            from pluvial.agents.region_search import adjudicate_survivors, run_region_search
+
+            async def produce(emit) -> None:
+                result = await run_region_search(
+                    con, client, pending.payload["query"], pending.payload["credit_budget"],
+                    stream, emit,
+                )
+                if result is None:
+                    return
+                summary = await adjudicate_survivors(con, client, result, stream, emit)
+                await emit(stream.make("message", {
+                    "side": "system",
+                    "text": (
+                        f"Top {len(summary)} areas adjudicated. "
+                        f"Spent {result.credits_spent} of a {result.credit_budget} ceiling"
+                        + (" — budget exhausted, partial results." if result.exhausted_budget else ".")
+                    ),
+                    "areas": summary,
+                    "exhausted_budget": result.exhausted_budget,
+                }, lane="region"))
+
+            try:
+                async for event in merge_to_queue(produce):
+                    yield event.to_sse()
+            except Exception as exc:
+                yield stream.make("error", {"message": str(exc)}).to_sse()
+                return
+        yield stream.make("done", {"credits_spent": stream.credits_spent}, lane="region").to_sse()
+        return
+
     if pending.kind == "analyze_location":
         yield stream.make("confirmed" if False else "message", {
             "side": "system",
@@ -178,7 +211,9 @@ async def _confirm_events(session_id: str, pending_id: str) -> AsyncIterator[str
             resp = client.fetch_batch(ALL_FIELDS, [(lat, lon)],
                                       idempotency_key=f"chat-sample-{sample_id}")
             results = resp.get("results") or resp.get("locations") or []
-            return extract_batch_result(results[0]) if results else {}
+            if not results:
+                raise RuntimeError("Mireye returned no result for that point")
+            return extract_batch_result(results[0], strict=True)
 
         try:
             values = await asyncio.to_thread(fetch)

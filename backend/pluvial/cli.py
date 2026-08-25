@@ -196,6 +196,12 @@ def backtest(
     run_budget_ceiling: int = 200,
     max_cases: int | None = None,
     ablation: str = typer.Option(None, help="None, 'no_moisture', or 'no_memory' (design spec §8)"),
+    mode: str = typer.Option(
+        "triage",
+        help="'triage' scores the 311 cascade as shipped originally; 'address' feeds the same "
+             "cases only their ground physics and scores the service_lines ruling. The gap "
+             "between them is what complaint evidence contributes.",
+    ),
     account_label: str = "shard-1",
     rescore: Path = typer.Option(
         None,
@@ -219,12 +225,25 @@ def backtest(
         raise typer.Exit(1)
     account = MireyeAccount(label=account_label, api_key=key)
 
+    if mode not in ("triage", "address"):
+        raise typer.BadParameter("mode must be 'triage' or 'address'")
+    if mode == "address" and ablation:
+        raise typer.BadParameter("ablations are defined against the triage cascade only")
+
     with dal.connect() as con:
-        result = asyncio.run(run_backtest(
-            con, account, frozen_at, label_window_days, ESCALATION_CASE_TYPES,
-            run_budget_ceiling, max_cases=max_cases, ablation=ablation,
-            only_cases=only_cases,
-        ))
+        if mode == "address":
+            from pluvial.eval.address_backtest import run_address_backtest
+
+            result = asyncio.run(run_address_backtest(
+                con, account, frozen_at, label_window_days, ESCALATION_CASE_TYPES,
+                max_cases=max_cases, only_cases=only_cases,
+            ))
+        else:
+            result = asyncio.run(run_backtest(
+                con, account, frozen_at, label_window_days, ESCALATION_CASE_TYPES,
+                run_budget_ceiling, max_cases=max_cases, ablation=ablation,
+                only_cases=only_cases,
+            ))
 
     summary = {k: v for k, v in result.items() if k != "results"}
     typer.echo(json.dumps(summary, indent=2))
@@ -232,9 +251,10 @@ def backtest(
     # A re-score reads its case list from a prior run's file, so it must never
     # write back over that file: doing so destroys the very baseline it is
     # being compared against, and these results are expensive to reproduce.
-    stem = f"backtest_{ablation or 'full'}_{frozen_at.replace(':', '-')}"
+    tag = "address" if mode == "address" else (ablation or "full")
+    stem = f"backtest_{tag}_{frozen_at.replace(':', '-')}"
     if rescore:
-        stem = f"backtest_rescore_{ablation or 'full'}_{frozen_at.replace(':', '-')}"
+        stem = f"backtest_rescore_{tag}_{frozen_at.replace(':', '-')}"
     out_path = DEFAULT_DATA_DIR / f"{stem}.json"
     if rescore and out_path.resolve() == rescore.resolve():
         raise typer.BadParameter("refusing to overwrite the --rescore baseline")
@@ -362,6 +382,70 @@ def analyze_address(
         ids = record_rulings(con, plan.location_id, ctx.guidance_version, results)
         con.commit()
         typer.echo(f"\nrecorded rulings {ids} for location {plan.location_id}")
+
+
+@app.command()
+def search_region(
+    query: str,
+    credit_budget: int = 2500,
+    confirm: bool = typer.Option(False, help="Actually run the traversal. Without it, nothing is spent."),
+    adjudicate: bool = True,
+) -> None:
+    """Adaptive regional search: find ground in a metro or county that is
+    less likely to move, spending up to a ceiling and no further.
+
+    The ceiling is enforced before each request, so an exhausted budget means
+    the request was never sent. Partial results come back labelled as
+    partial rather than silently truncated.
+    """
+    from pluvial.agents.region_search import adjudicate_survivors, run_region_search
+    from pluvial.api.events import EventStream
+    from pluvial.mireye.accounts import primary_account
+
+    if not confirm:
+        typer.echo(
+            f"would search: {query!r} with a ceiling of {credit_budget} credits.\n"
+            "Re-run with --confirm to spend."
+        )
+        raise typer.Exit(0)
+
+    dal.init_db()
+    stream = EventStream()
+
+    async def emit(event) -> None:
+        payload = event.payload
+        if event.type == "cell_scored":
+            score = payload["score"]
+            typer.echo(
+                f"  L{payload['level']} cell {payload['cell_id']} "
+                f"({payload['lat']:.4f}, {payload['lon']:.4f}) "
+                f"score={'—' if score is None else f'{score:.2f}'} "
+                f"[{payload.get('soil_map_unit_name')}] {stream.credits_spent}cr"
+            )
+        elif event.type == "cell_subdivided":
+            typer.echo(f"  subdividing L{payload['level']} cell (score {payload['score']:.2f})")
+        elif event.type in ("message", "error"):
+            typer.echo(f"[{event.type}] {payload.get('text') or payload.get('message')}")
+        elif event.type == "ruling":
+            typer.echo(f"    ruling {payload['threat']}: {payload['severity']}")
+
+    async def go() -> None:
+        with dal.connect() as con, MireyeClient(primary_account(), timeout=60.0) as client:
+            result = await run_region_search(con, client, query, credit_budget, stream, emit)
+            if result is None:
+                return
+            typer.echo(
+                f"\nsearched {len(result.scored)} cells across {result.levels_completed} level(s); "
+                f"spent {result.credits_spent}/{result.credit_budget} credits; "
+                f"exhausted_budget={result.exhausted_budget}"
+            )
+            for rank, sc in enumerate(result.survivors, 1):
+                typer.echo(f"  survivor {rank}: {sc.cell.lat:.4f}, {sc.cell.lon:.4f} score={sc.score:.3f}")
+            if adjudicate:
+                summary = await adjudicate_survivors(con, client, result, stream, emit)
+                typer.echo(f"\nadjudicated: {json.dumps(summary, indent=2, default=str)}")
+
+    asyncio.run(go())
 
 
 @app.command()

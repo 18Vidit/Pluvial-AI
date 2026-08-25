@@ -232,16 +232,26 @@ def recent_verdicts(con: psycopg.Connection, segment_id: int, limit: int = 10) -
 
 
 def precedent_search(
-    con: psycopg.Connection, shrink_swell_class: str, trigger_state: str, symptom_class: str
+    con: psycopg.Connection, shrink_swell_class: str, trigger_state: str, symptom_class: str,
+    as_of: str | None = None,
 ) -> list[dict[str, Any]]:
+    """as_of filters to verdicts decided on or before that moment. Only the
+    eval harness passes it; without it a backtest frozen at T can retrieve
+    precedents recorded after T, which is the future leaking into a
+    prediction."""
+    clause = "AND v.decided_at <= %s" if as_of else ""
+    params: tuple = (shrink_swell_class, trigger_state, symptom_class)
+    if as_of:
+        params = params + (as_of,)
     rows = con.execute(
-        """
+        f"""
         SELECT p.*, v.disposition AS verdict_disposition, v.decided_at
         FROM precedents p JOIN verdicts v ON v.verdict_id = p.verdict_id
         WHERE p.shrink_swell_class = %s AND p.trigger_state = %s AND p.symptom_class = %s
+          {clause}
         ORDER BY v.decided_at DESC LIMIT 10
         """,
-        (shrink_swell_class, trigger_state, symptom_class),
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 

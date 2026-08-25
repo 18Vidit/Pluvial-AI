@@ -144,7 +144,7 @@ def moisture_history(wrapper: RunContextWrapper[AddressContext]) -> str:
     the ground is moving; the soil fields tell you WHERE it moves a lot. A
     claim built on this has no sample_id, and that is correct."""
     ctx = wrapper.context
-    state = dal.current_trigger_state(ctx.con, region_key=ctx.region_key)
+    state = dal.current_trigger_state(ctx.con, as_of=ctx.frozen_at, region_key=ctx.region_key)
     if state is None:
         return json.dumps({
             "available": False,
@@ -202,7 +202,10 @@ def precedent_search(
     how they turned out. The recorded corpus is Houston water-main cases, so
     treat it as evidence about the mechanism (what this clay does in this
     trigger state), not as evidence about this address."""
-    rows = dal.precedent_search(wrapper.context.con, shrink_swell_class, trigger_state, symptom_class)
+    ctx = wrapper.context
+    rows = dal.precedent_search(
+        ctx.con, shrink_swell_class, trigger_state, symptom_class, as_of=ctx.frozen_at
+    )
     return json.dumps(rows, default=str)
 
 

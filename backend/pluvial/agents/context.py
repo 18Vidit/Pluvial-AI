@@ -39,6 +39,7 @@ class AddressContext:
     samples: list[dict[str, Any]]
     threat: str | None = None
     region_key: str | None = None
+    frozen_at: str | None = None  # set only by the eval harness for backtesting
 
     def sample(self, sample_id: int) -> dict[str, Any] | None:
         return next((s for s in self.samples if s["sample_id"] == sample_id), None)

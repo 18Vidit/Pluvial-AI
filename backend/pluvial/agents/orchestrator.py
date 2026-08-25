@@ -48,6 +48,8 @@ Tools:
   spends nothing. The person confirms.
 - analyze_location(address): propose the full nine-point pipeline on a new
   address. Quotes, spends nothing. The person confirms.
+- search_region(query, credit_budget): propose an adaptive search across a
+  metro or county for better ground. Quotes a ceiling, spends nothing.
 
 When you call sample_point or analyze_location, say plainly that you have
 put a quote up and that nothing is spent until they confirm it. You cannot
@@ -60,6 +62,9 @@ WHAT YOU CANNOT DO, and must say plainly rather than guess at:
   deliberate deferral, not an oversight.
 - Parcel-level inverse search — finding specific properties rather than
   areas — needs parcel geometry, which is out of scope for this build.
+  search_region returns AREAS. Say so when you offer it: the honest
+  journey is screen the metro, shortlist a neighbourhood, then analyse a
+  specific address properly.
 - Anything about the interior of a structure, its construction, or its
   maintenance history. This system knows about ground.
 
@@ -273,7 +278,47 @@ async def analyze_location(wrapper: RunContextWrapper[OrchestratorContext], addr
     })
 
 
-ORCHESTRATOR_TOOLS = [explain_ruling, explain_veto, compare_samples, sample_point, analyze_location]
+@function_tool
+async def search_region(
+    wrapper: RunContextWrapper[OrchestratorContext], query: str, credit_budget: int = 2500
+) -> str:
+    """Propose an adaptive search across a region for ground that is less
+    likely to move — "where near Austin is the ground better?". Quotes a
+    CEILING and spends NOTHING; the person confirms.
+
+    Be honest about what this returns when you describe it: a grid returns
+    AREAS, not addresses. SSURGO map units are often 100m to 1km, so even the
+    refined cells are neighbourhood-level guidance. The truthful framing is a
+    two-stage journey — screen the metro, shortlist neighbourhoods, then
+    analyse a specific address properly with analyze_location.
+    """
+    ctx = wrapper.context
+    budget = max(500, min(int(credit_budget), 6000))
+
+    pending_id = f"region-{len(ctx.pending)}-{abs(hash(query)) % 10**6}"
+    ctx.pending[pending_id] = PendingSpend(
+        pending_id=pending_id, kind="search_region", quoted_credits=budget,
+        payload={"query": query, "credit_budget": budget},
+    )
+
+    await ctx.emit(ctx.stream.make("quote", {
+        "pending_id": pending_id,
+        "kind": "search_region",
+        "quoted_credits": budget,
+        "label": f"adaptive regional search — up to {budget} credits, and it stops at that ceiling",
+        "query": query,
+    }))
+
+    return json.dumps({
+        "proposed": True, "credit_ceiling": budget,
+        "note": "This is a CEILING, not a price — the traversal stops when it hits it and labels "
+                "partial results as partial. Nothing is spent until the person confirms.",
+    })
+
+
+ORCHESTRATOR_TOOLS = [
+    explain_ruling, explain_veto, compare_samples, sample_point, analyze_location, search_region,
+]
 
 
 def build_orchestrator(con, location: dict[str, Any], samples: list[dict[str, Any]],

@@ -24,7 +24,7 @@ from pluvial.ingest.stations import nearest_station
 from pluvial.memory import dal
 from pluvial.mireye.client import MireyeClient, chunk_locations
 from pluvial.mireye.fields import ALL_FIELDS, is_soil_usable
-from pluvial.mireye.profile_job import extract_batch_result
+from pluvial.mireye.profile_job import BatchLocationFailed, extract_batch_result
 
 NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "pluvial-ai-address-mode/1.0"
@@ -153,7 +153,9 @@ def fetch_samples(
         )
         results = resp.get("results") or resp.get("locations") or []
         for (sample_id, lat, lon), result in zip(chunk, results):
-            values = extract_batch_result(result)
+            # strict: a point Mireye could not answer for must surface as an
+            # error, never be written as a point with no soil data.
+            values = extract_batch_result(result, strict=True)
             soil_usable = is_soil_usable(values)
             dal.record_sample_profile(con, sample_id, values, soil_usable, client.account.label)
             record = {

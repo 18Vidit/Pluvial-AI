@@ -217,7 +217,7 @@ def location_summary(ctx: AddressContext) -> str:
     trigger = None
     from pluvial.memory import dal
 
-    state = dal.current_trigger_state(ctx.con, region_key=ctx.region_key)
+    state = dal.current_trigger_state(ctx.con, as_of=ctx.frozen_at, region_key=ctx.region_key)
     if state:
         trigger = {
             "trigger_state": state.get("trigger_state"),
