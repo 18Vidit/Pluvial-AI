@@ -85,3 +85,81 @@ async def scan_and_reawaken(
             new_verdict_ids.append(new_id)
 
     return new_verdict_ids
+
+
+# --- address mode -------------------------------------------------------------
+
+def _address_condition_holds(con: psycopg.Connection, ruling: dict) -> bool:
+    """Address mode's invalidation conditions are moisture conditions.
+
+    The complaint-clustering clauses that reopen a triage verdict have no
+    meaning here — there is no 311 feed and no street segment to cluster on
+    — so only the trigger-state clause is evaluated, against the ruling's own
+    region rather than Houston's.
+    """
+    condition = ruling["invalidation_condition"] or {}
+    wanted = condition.get("reopen_if_trigger_state_in") or []
+    if not wanted:
+        return False
+    trigger = dal.current_trigger_state(con, region_key=ruling.get("region_key"))
+    return bool(trigger and trigger["trigger_state"] in wanted)
+
+
+async def scan_and_reawaken_addresses(
+    con: psycopg.Connection,
+    account: MireyeAccount,
+    guidance_version: int,
+) -> list[int]:
+    """Re-argue rulings whose stated physical precondition now holds.
+
+    This is what turns an invalidation condition into "watch this address":
+    when the moisture state flips to rewetting, the ruling reopens without
+    anyone asking. It re-reasons over the ground already on file and never
+    buys more — the ceiling is 0 — because what changed is the trigger
+    state, not the soil.
+    """
+    from pluvial.agents.address_cascade import record_rulings, run_all_threats
+    from pluvial.agents.context import AddressContext
+
+    candidates = dal.open_rulings_with_invalidation(con)
+    reopened: list[int] = []
+    seen_locations: set[int] = set()
+
+    with MireyeClient(account) as client:
+        for ruling in candidates:
+            location_id = ruling["location_id"]
+            if location_id in seen_locations:
+                continue  # one re-argument per location covers all three threats
+            if not _address_condition_holds(con, ruling):
+                continue
+            seen_locations.add(location_id)
+
+            location = dal.get_location(con, location_id)
+            samples = dal.location_samples(con, location_id)
+            if not any(s.get("profile") for s in samples):
+                continue  # never fetched; nothing to re-reason over
+
+            ctx = AddressContext(
+                con=con,
+                mireye=MireyeToolWrapper(con, client, RunBudget(ceiling=0)),
+                run_budget=RunBudget(ceiling=0),
+                guidance_version=guidance_version,
+                location=location,
+                samples=samples,
+                region_key=location["region_key"],
+            )
+            _, results = await run_all_threats(ctx)
+            prior_by_threat = {r["threat"]: r["ruling_id"] for r in dal.location_rulings(con, location_id)}
+            for threat, (new_ruling, investigator_out, skeptic_out) in results.items():
+                ids = record_rulings(
+                    con, location_id, guidance_version, {threat: (new_ruling, investigator_out, skeptic_out)}
+                )
+                new_id = ids[threat]
+                con.execute(
+                    "UPDATE threat_rulings SET reawakened_from = %s WHERE ruling_id = %s",
+                    (prior_by_threat.get(threat), new_id),
+                )
+                reopened.append(new_id)
+            con.commit()
+
+    return reopened

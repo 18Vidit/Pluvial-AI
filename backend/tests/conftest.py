@@ -21,6 +21,8 @@ TEST_SCHEMA = "pluvial_test"
 MEMORY_TABLES = [
     "segments", "moisture_history", "complaints", "verdicts",
     "outcomes", "calibration", "precedents",
+    "locations", "location_samples", "threat_rulings",
+    "region_searches", "region_cells",
 ]
 
 

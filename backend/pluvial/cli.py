@@ -175,16 +175,29 @@ def calibrate() -> None:
 def reawaken(
     account_label: str = "shard-1",
     run_budget_ceiling: int = 200,
+    mode: str = typer.Option(
+        "triage",
+        help="'triage' re-opens 311 verdicts; 'address' re-opens threat rulings whose "
+             "moisture condition now holds — the 'watch this address' loop.",
+    ),
 ) -> None:
-    """Phase 6: scan closed/monitored verdicts and re-open the ones whose
-    invalidation condition now holds."""
+    """Scan rulings that stated a physical precondition for reconsideration
+    and re-argue the ones whose precondition now holds — unprompted."""
     key = os.environ.get("MIREYE_API_KEY_1")
     if not key:
         typer.echo("MIREYE_API_KEY_1 not set", err=True)
         raise typer.Exit(1)
+    if mode not in ("triage", "address"):
+        raise typer.BadParameter("mode must be 'triage' or 'address'")
     account = MireyeAccount(label=account_label, api_key=key)
     with dal.connect() as con:
         version = dal.latest_guidance_version(con)
+        if mode == "address":
+            from pluvial.agents.reawaken import scan_and_reawaken_addresses
+
+            new_ids = asyncio.run(scan_and_reawaken_addresses(con, account, version))
+            typer.echo(f"reawakened {len(new_ids)} threat rulings: {new_ids}")
+            return
         new_ids = asyncio.run(scan_and_reawaken(con, account, run_budget_ceiling, version))
     typer.echo(f"reawakened {len(new_ids)} verdicts: {new_ids}")
 
