@@ -13,7 +13,8 @@ from pluvial.agents.live import process_new_complaints
 from pluvial.agents.reawaken import scan_and_reawaken
 from pluvial.ingest import houston_311, moisture_sync, osm_pbf, osm_segments
 from pluvial.memory import dal
-from pluvial.mireye.client import MireyeAccount
+from pluvial.mireye.client import MireyeAccount, MireyeClient
+from pluvial.mireye.wrapper import MireyeToolWrapper, RunBudget
 from pluvial.mireye.profile_job import run_profiling_shard, select_stratified_segments, shard_by_longitude
 
 load_dotenv()
@@ -291,6 +292,76 @@ def negative_control(
     out_path = DEFAULT_DATA_DIR / "negative_control_nyc.json"
     out_path.write_text(json.dumps(result, indent=2, default=str))
     typer.echo(f"full per-case results written to {out_path}")
+
+
+@app.command()
+def analyze_address(
+    address: str,
+    confirm: bool = typer.Option(False, help="Actually spend the quoted credits. Without it this stops at the quote."),
+    threats: str = "foundation,service_lines,subsidence",
+    run_budget_ceiling: int = 500,
+) -> None:
+    """Address mode from the command line: geocode, plan nine sample points,
+    quote, and — only with --confirm — fetch live and run the three
+    adversarial cascades.
+
+    The same two-step gate the UI uses. Without --confirm this prints the
+    plan and the quote and spends nothing, which is also how you check that
+    an address geocodes before paying to profile it.
+    """
+    from pluvial import analyze
+    from pluvial.agents.address_cascade import record_rulings, run_all_threats
+    from pluvial.agents.context import AddressContext
+    from pluvial.mireye.accounts import primary_account
+
+    dal.init_db()
+    account = primary_account()
+    with dal.connect() as con, MireyeClient(account, timeout=60.0) as client:
+        plan = analyze.plan(con, address, client)
+        typer.echo(json.dumps(plan.as_dict(), indent=2, default=str))
+
+        if not confirm:
+            typer.echo(f"\nquoted {plan.quoted_credits} credits, spent 0. Re-run with --confirm to fetch.")
+            raise typer.Exit(0)
+
+        analyze.ensure_moisture(plan)
+        analyze.fetch_samples(
+            con, client, plan,
+            on_point=lambda p: typer.echo(
+                f"  point {p['sample_id']}: soil_usable={p['soil_usable']} "
+                f"{(p['profile'].get('soil_map_unit_name') or {}).get('value')}"
+            ),
+        )
+
+        samples = dal.location_samples(con, plan.location_id)
+        ctx = AddressContext(
+            con=con,
+            mireye=MireyeToolWrapper(con, client, RunBudget(ceiling=0)),
+            run_budget=RunBudget(ceiling=run_budget_ceiling),
+            guidance_version=dal.latest_guidance_version(con),
+            location=dal.get_location(con, plan.location_id),
+            samples=samples,
+            region_key=plan.region_key,
+        )
+
+        triage_out, results = asyncio.run(
+            run_all_threats(ctx, tuple(t.strip() for t in threats.split(",") if t.strip()))
+        )
+        typer.echo(f"\ntriage: {triage_out.decision} — {triage_out.reason}")
+        for threat, (ruling, _, skeptic_out) in results.items():
+            cited = [c for c in ruling.decisive_evidence if c.sample_id is not None]
+            typer.echo(
+                f"\n[{threat}] {ruling.severity.upper()}  "
+                f"({len(ruling.decisive_evidence)} claims, {len(cited)} point-anchored, "
+                f"vetoed points: {skeptic_out.vetoed_sample_ids})"
+            )
+            typer.echo(f"  {ruling.explanation}")
+            for u in ruling.unknowns:
+                typer.echo(f"  unknown: {u}")
+
+        ids = record_rulings(con, plan.location_id, ctx.guidance_version, results)
+        con.commit()
+        typer.echo(f"\nrecorded rulings {ids} for location {plan.location_id}")
 
 
 @app.command()

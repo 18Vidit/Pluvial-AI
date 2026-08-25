@@ -1,4 +1,8 @@
-"""FastAPI surface for Pluvial-AI (design spec §7).
+"""FastAPI surface for Pluvial-AI.
+
+Two products share one app. Address mode — the live, national, map-anchored
+product — lives in `analyze_routes.py` and is mounted here. Everything
+defined in this file is the Houston evaluation surface (design spec §7):
 
 GET /queue        — today's Triage-promoted cases with their verdicts, for
                      the dispatcher board's three columns.
@@ -6,6 +10,12 @@ GET /segments/{id} — a segment's physical profile + complaint history, for
                      both the dispatcher card expansion and the public view.
 POST /reprofile/{id} — force a fresh Mireye fetch for a segment (admin use;
                      still goes through the wrapper's quote-then-fetch path).
+
+`POST /cascade/run` used to live here and is deliberately gone. It pinned
+the Mireye wrapper at ceiling=0, so the flagship "prove it's real" path
+provably never called Mireye — it re-reasoned over a profile fetched months
+earlier at build time. `POST /analyze/plan` + `GET /analyze/run` replace it
+and fetch live ground for whatever address is typed.
 """
 from __future__ import annotations
 
@@ -28,6 +38,8 @@ from pluvial.mireye.wrapper import CreditCeilingExceeded, MireyeToolWrapper, Run
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search"
 
+from pluvial.api.analyze_routes import router as analyze_router
+
 app = FastAPI(title="Pluvial-AI API")
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +47,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(analyze_router)
 
 
 @app.on_event("startup")
@@ -241,56 +256,4 @@ def verdict_detail(verdict_id: int):
         "segment": segment,
         "moisture": moisture,
         "prior_verdict": prior,
-    }
-
-
-@app.post("/cascade/run")
-def cascade_run(case_number: str):
-    """Run the four agents live against one complaint and return the result
-    WITHOUT writing a verdict — this is the demo's 'prove it's real' path,
-    so it must not pollute the recorded queue. Costs real model calls, which
-    is why the UI makes it an explicit opt-in rather than the default view.
-    Mireye stays cache-only (ceiling 0): a live run reasons over the profile
-    already on file, it does not buy new ground truth."""
-    import asyncio
-
-    from pluvial.agents.cascade import run_cascade
-    from pluvial.agents.context import CascadeContext
-
-    key = os.environ.get("MIREYE_API_KEY_1")
-    if not key:
-        raise HTTPException(status_code=400, detail="MIREYE_API_KEY_1 not set")
-
-    with dal.connect() as con:
-        complaint = dal.get_complaint(con, case_number)
-        if complaint is None:
-            raise HTTPException(status_code=404, detail="complaint not found")
-        segment = dal.get_segment(con, complaint["segment_id"])
-        if segment is None or not segment.get("profile"):
-            raise HTTPException(status_code=409, detail="segment has no cached Mireye profile; cannot run cache-only")
-
-        guidance_version = dal.latest_guidance_version(con)
-        account = MireyeAccount(label="live-demo", api_key=key)
-        with MireyeClient(account) as client:
-            ctx = CascadeContext(
-                con=con,
-                mireye=MireyeToolWrapper(con, client, RunBudget(ceiling=0)),
-                run_budget=RunBudget(ceiling=0),
-                guidance_version=guidance_version,
-            )
-            triage, verdict, investigator, skeptic = asyncio.run(
-                run_cascade(
-                    con, ctx,
-                    json.dumps(complaint, default=str),
-                    json.dumps({"segment": segment}, default=str),
-                )
-            )
-
-    return {
-        "case_number": case_number,
-        "triage": triage.model_dump() if triage else None,
-        "investigator": investigator.model_dump() if investigator else None,
-        "skeptic": skeptic.model_dump() if skeptic else None,
-        "verdict": verdict.model_dump() if verdict else None,
-        "persisted": False,
     }

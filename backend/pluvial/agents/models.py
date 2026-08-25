@@ -17,6 +17,19 @@ TriageDecision = Literal["promote", "fast_path", "discard"]
 Disposition = Literal["dispatch", "inspect", "monitor", "close"]
 Priority = Literal["critical", "high", "medium", "low"]
 
+# Address mode. Three threats, each independently adjudicated, mapped onto
+# mechanisms the system already models:
+#   foundation    shrink-swell, bedrock depth, moisture trigger state
+#   service_lines shrink-swell + erodibility + drainage
+#   subsidence    erodibility, hydrologic group, karst
+Threat = Literal["foundation", "service_lines", "subsidence"]
+
+# `unresolved` is the Honesty Gate's output, not a failure state. Where the
+# dominant SSURGO component is Urban land there is no soil answer, and
+# saying `low` there would read as "safe" — which is a different claim, and
+# an unsupported one.
+Severity = Literal["high", "elevated", "low", "unresolved"]
+
 
 class TriageOutput(BaseModel):
     decision: TriageDecision
@@ -32,6 +45,12 @@ class CitedClaim(BaseModel):
     value: str
     source: str | None = Field(default=None, description="Mireye's cited source for this field, when applicable")
     interpretation: str = Field(description="What this fact means for this case, one sentence")
+    sample_id: int | None = Field(
+        default=None,
+        description="Which sampled point this fact was read at. Required for any Mireye field in "
+        "address mode. Null only for evidence that genuinely has no point — moisture_history is "
+        "regional by design, and complaint_history belongs to a street segment, not a sample.",
+    )
 
 
 class InvestigatorOutput(BaseModel):
@@ -48,6 +67,11 @@ class SkepticOutput(BaseModel):
         "(dominant component is Urban land) — the honesty gate. Vetoes the soil claim only, not the verdict."
     )
     veto_reason: str | None = None
+    vetoed_sample_ids: list[int] = Field(
+        default_factory=list,
+        description="The sampled points the veto invalidates. Naming them is what lets the map grey "
+        "out exactly the ground that has no soil answer, instead of the whole location.",
+    )
 
 
 class InvalidationCondition(BaseModel):
@@ -71,3 +95,24 @@ class Verdict(BaseModel):
         default=None, description="Required when disposition is 'close' or 'monitor'"
     )
     explanation: str = Field(description="Plain-English verdict summary for the dispatcher board card")
+
+
+class ThreatRuling(BaseModel):
+    """Address mode's adjudicated output — the same contract as `Verdict`,
+    carrying a threat and a severity instead of a dispatcher disposition and
+    priority. Kept as a separate model rather than widened unions on
+    `Verdict` so the eval path's shape never moves."""
+
+    threat: Threat
+    severity: Severity
+    decisive_evidence: list[CitedClaim]
+    rejected_counter_argument: str = Field(description="The Skeptic's strongest point and why it didn't change the ruling")
+    invalidation_condition: InvalidationCondition | None = Field(
+        default=None, description="Required when severity is anything other than 'high'"
+    )
+    unknowns: list[str] = Field(
+        default_factory=list,
+        description="Required when severity is 'unresolved': what specifically is unknown, and what "
+        "evidence would settle it. An unresolved ruling with no unknowns is a shrug, not an answer.",
+    )
+    explanation: str = Field(description="Plain-English summary of this ruling for the person who asked")
