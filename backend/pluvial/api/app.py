@@ -208,7 +208,7 @@ def _read_eval_summary() -> dict:
             continue
         data = json.loads(path.read_text())
         out[label] = {k: data.get(k) for k in ("n", "precision", "recall", "true_positive", "false_positive")}
-        for extra in ("severity_counts", "skipped_unprofiled", "threat"):
+        for extra in ("severity_counts", "skipped_unprofiled", "threat", "by_soil_usable"):
             if extra in data:
                 out[label][extra] = data[extra]
 

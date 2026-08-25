@@ -147,4 +147,17 @@ async def run_address_backtest(
         severity: sum(1 for r in results if r["severity"] == severity)
         for severity in ("high", "elevated", "low", "unresolved")
     }
+
+    # Reported unconditionally, because the headline number without it is
+    # misleading in both directions. Where the soil gate fires there is
+    # nothing to reason from, so those cases measure SSURGO's coverage of
+    # Houston, not the agents' judgement — and they dominate the pooled
+    # number. Splitting them out says which is which instead of letting the
+    # reader assume one and get the other.
+    scored["by_soil_usable"] = {
+        "usable": score_results([r for r in results if r["soil_usable"]]),
+        "urban_land": score_results([r for r in results if not r["soil_usable"]]),
+    }
+    for stratum in scored["by_soil_usable"].values():
+        stratum.pop("results", None)
     return scored
