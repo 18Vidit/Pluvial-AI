@@ -349,7 +349,13 @@ def analyze_address(
 
     dal.init_db()
     with dal.connect() as con, MireyeClientPool() as client:
-        plan = analyze.plan(con, address, client)
+        # An address that does not geocode is an ordinary outcome of typing
+        # one, not a crash. A traceback here buries the one line that matters.
+        try:
+            plan = analyze.plan(con, address, client)
+        except analyze.GeocodeFailed as e:
+            typer.echo(f"{e}. Try adding a city and state, or a nearby street number.", err=True)
+            raise typer.Exit(1)
         typer.echo(json.dumps(plan.as_dict(), indent=2, default=str))
 
         if not confirm:
