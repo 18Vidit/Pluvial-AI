@@ -60,42 +60,50 @@ export default async function Landing() {
       <section className="mx-auto max-w-7xl px-5 sm:px-8 pt-12 pb-16 sm:pt-20">
         <div className="grid lg:grid-cols-[1.05fr_1.35fr] gap-10 lg:gap-16 items-center">
           <div>
-            <p className="eyebrow mb-5">Houston 311 · subsurface triage</p>
+            <p className="eyebrow mb-5">Ground risk · any US address</p>
             <h1 className="display text-[2.6rem] sm:text-6xl xl:text-[4.4rem] text-bone">
-              Houston&apos;s clay moves.
+              The clay moves.
               <br />
               <span className="text-clay-light">The pipes don&apos;t.</span>
             </h1>
             <p className="mt-6 text-[15px] sm:text-base leading-relaxed text-bone-dim max-w-lg">
-              The city logs hundreds of vague water complaints a day — brown water, low
-              pressure, a wet patch that won&apos;t dry. Most are nothing. A few are a main
-              two weeks from failing, on ground that swells and shrinks four inches
-              through every wet–dry cycle.
+              Expansive soil swells and shrinks through every wet–dry cycle — inches, not
+              millimetres — and takes foundations and buried service lines with it. It is
+              not a Texas problem: it runs through Colorado&apos;s Front Range, the
+              Midwest and the Mississippi embayment.
             </p>
             <p className="mt-4 text-[15px] sm:text-base leading-relaxed text-bone-dim max-w-lg">
-              Pluvial-AI reads each complaint against what the soil underneath is doing
-              right now, argues both sides, and says which ones a crew should see today.
+              Type an address. Pluvial-AI fetches the ground under it from Mireye at the
+              moment you ask, then three pairs of agents argue over what it means — with
+              every claim anchored to a specific sampled point on the map. Where there is
+              no soil answer, it says so rather than calling it safe.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/address"
+                className="inline-flex items-center gap-2 rounded bg-bone px-5 py-3 text-sm font-medium text-ground-900 transition-colors duration-200 hover:bg-clay-light"
+              >
+                Analyse an address
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <path d="M4 2.5v10l8-5-8-5z" fill="currentColor" />
+                </svg>
+              </Link>
               {featured && (
                 <Link
                   href={`/case/${featured.verdict_id}`}
-                  className="inline-flex items-center gap-2 rounded bg-bone px-5 py-3 text-sm font-medium text-ground-900 transition-colors duration-200 hover:bg-clay-light"
+                  className="inline-flex items-center rounded border border-ground-700 px-5 py-3 text-sm text-bone transition-colors duration-200 hover:bg-ground-800"
                 >
-                  Watch a decision get made
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-                    <path d="M4 2.5v10l8-5-8-5z" fill="currentColor" />
-                  </svg>
+                  Watch a recorded decision
                 </Link>
               )}
-              <Link
-                href="/board"
-                className="inline-flex items-center rounded border border-ground-700 px-5 py-3 text-sm text-bone transition-colors duration-200 hover:bg-ground-800"
-              >
-                Open today&apos;s queue
-              </Link>
             </div>
+
+            <p className="mt-5 text-xs leading-relaxed text-bone-faint max-w-lg">
+              The Houston 311 corpus below is how the reasoning is measured, not what the
+              product does — 395,783 real complaints with recorded verdicts and a
+              backtest against escalation labels.
+            </p>
           </div>
 
           {/* The thesis, drawn. Very High shrink-swell on a rewetting cycle:

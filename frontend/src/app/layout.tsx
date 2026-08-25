@@ -25,9 +25,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pluvial-AI — Houston water main triage",
+  title: "Pluvial-AI — what the ground will do to this address",
   description:
-    "Which vague 311 water complaints are early symptoms of a main about to fail, given what the clay underneath them is doing right now.",
+    "Enter any US address. Real ground data is fetched live from Mireye and three pairs of agents argue over it, with every claim anchored to a sampled point on the map.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
