@@ -232,6 +232,9 @@ export default async function Landing() {
         <section className="border-t border-ground-700 bg-ground-850">
           <div className="mx-auto max-w-7xl px-5 sm:px-8 py-16">
             <Depth cm="−190cm" label="What it actually scored" />
+            <p className="eyebrow mb-2 text-bone-faint">
+              This measures the Houston 311 evaluation corpus, not the address-mode product above.
+            </p>
             <div className="grid lg:grid-cols-[1fr_1.1fr] gap-10 lg:gap-16">
               <div>
                 <h2 className="display text-3xl sm:text-4xl text-bone">
@@ -248,6 +251,28 @@ export default async function Landing() {
                   <Stat value={pct(stats.eval.full.precision)} label={`Precision over ${stats.eval.full.n} live cases`} tone="moisture" />
                   <Stat value={pct(stats.eval.full.recall)} label="Recall — the honest weak spot" tone="oxide-bright" />
                 </div>
+
+                {stats.eval.address && (
+                  <div className="mt-8 rounded-lg border border-ground-700 bg-ground-800 p-5">
+                    <p className="eyebrow mb-2">Address mode · same cases, only ground physics</p>
+                    <p className="text-[13.5px] leading-relaxed text-bone-dim">
+                      The shipped product sees no 311 text. Fed the identical {stats.eval.address.n}{" "}
+                      cases with nothing but the sampled ground, it scores{" "}
+                      <span className="data text-bone">{pct(stats.eval.address.precision)}</span>{" "}
+                      precision /{" "}
+                      <span className="data text-oxide-bright">{pct(stats.eval.address.recall)}</span>{" "}
+                      recall pooled — but {stats.eval.address.by_soil_usable.urban_land.n} of those{" "}
+                      {stats.eval.address.n} sit on Urban land, where the honest answer is
+                      &ldquo;unresolved,&rdquo; not a miss. On the{" "}
+                      {stats.eval.address.by_soil_usable.usable.n} cases the ground was actually
+                      readable, recall is{" "}
+                      <span className="data text-moisture">
+                        {pct(stats.eval.address.by_soil_usable.usable.recall)}
+                      </span>{" "}
+                      — on too few positives to lean on, but higher than triage mode&apos;s.
+                    </p>
+                  </div>
+                )}
 
                 {stats.eval.negative_control && (
                   <div className="mt-8 rounded-lg border border-ground-700 bg-ground-800 p-5">

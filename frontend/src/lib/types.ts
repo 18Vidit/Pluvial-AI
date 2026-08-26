@@ -73,6 +73,21 @@ export interface EvalRun {
   false_positive: number;
 }
 
+export interface AddressEvalStratum {
+  n: number;
+  precision: number | null;
+  recall: number | null;
+  true_positive: number;
+  false_positive: number;
+}
+
+export interface AddressEvalRun extends EvalRun {
+  threat: string;
+  skipped_unprofiled: number;
+  severity_counts: { high: number; elevated: number; low: number; unresolved: number };
+  by_soil_usable: { usable: AddressEvalStratum; urban_land: AddressEvalStratum };
+}
+
 export interface Stats {
   segments_profiled: number;
   soil_usable: number;
@@ -86,6 +101,7 @@ export interface Stats {
     full: EvalRun | null;
     no_moisture: EvalRun | null;
     no_memory: EvalRun | null;
+    address: AddressEvalRun | null;
     negative_control: { n: number; n_soil_usable: number; n_false_soil_claims: number } | null;
   };
 }

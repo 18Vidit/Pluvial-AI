@@ -240,7 +240,7 @@ cd backend
 uv run pytest tests/ -v
 ```
 
-52 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), the Calibrator's outcome-harvesting and guidance-drafting logic, the nine-point sampling geometry, national station resolution, the regional-search scoring and subdivision rules, credit-ceiling enforcement, and the handling of a location Mireye refuses — all run without API keys. The Calibrator tests exercise real Postgres queries against a `pluvial_test` schema created and torn down automatically in the same Neon database (`DATABASE_URL` must be set); every other test is a pure-function test with no database at all.
+77 tests cover the moisture trigger-state classification, the `Urban land` soil-usability gate, the 311 parser's real-world edge cases (paginated re-inserted headers), the Calibrator's outcome-harvesting and guidance-drafting logic, the nine-point sampling geometry, national station resolution, the regional-search scoring and subdivision rules, credit-ceiling enforcement, and the handling of a location Mireye refuses — all run without API keys. The Calibrator tests exercise real Postgres queries against a `pluvial_test` schema created and torn down automatically in the same Neon database (`DATABASE_URL` must be set); every other test is a pure-function test with no database at all.
 
 ## Current status
 
