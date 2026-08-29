@@ -142,10 +142,14 @@ function PointChip({
 
 export function ThreatLane({
   lane,
+  isExpanded = true,
+  onToggle,
   onHoverSample,
   onSelectSample,
 }: {
   lane: LaneState;
+  isExpanded?: boolean;
+  onToggle?: () => void;
   onHoverSample?: (id: number | null) => void;
   onSelectSample?: (id: number) => void;
 }) {
@@ -163,10 +167,38 @@ export function ThreatLane({
   const severity = lane.ruling ? SEVERITY_STYLE[lane.ruling.severity] : null;
 
   return (
-    <section className="flex min-h-0 flex-col rounded-lg border border-ground-700 bg-ground-850">
-      <header className="border-b border-ground-700 px-3.5 py-3">
+    <section
+      className={[
+        "flex flex-col rounded-lg border border-ground-700 bg-ground-850",
+        "transition-all duration-300 ease-in-out overflow-hidden",
+        isExpanded ? "flex-[3] min-h-0" : "flex-1 min-h-0",
+      ].join(" ")}
+    >
+      <header
+        className={[
+          "border-b border-ground-700 px-3.5 py-3",
+          onToggle ? "cursor-pointer select-none hover:bg-ground-800 transition-colors" : "",
+        ].join(" ")}
+        onClick={onToggle}
+        role={onToggle ? "button" : undefined}
+        tabIndex={onToggle ? 0 : undefined}
+        onKeyDown={onToggle ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } } : undefined}
+      >
         <div className="flex items-baseline justify-between gap-2">
-          <h3 className="display text-[15px] text-bone">{THREAT_LABEL[lane.threat]}</h3>
+          <div className="flex items-baseline gap-2">
+            {onToggle && (
+              <span
+                className={[
+                  "inline-block text-[11px] text-bone-faint transition-transform duration-300",
+                  isExpanded ? "rotate-90" : "rotate-0",
+                ].join(" ")}
+                aria-hidden
+              >
+                ▶
+              </span>
+            )}
+            <h3 className="display text-[15px] text-bone">{THREAT_LABEL[lane.threat]}</h3>
+          </div>
           {severity ? (
             <span className={`flex items-center gap-1.5 text-[12px] ${severity.text}`}>
               <span className={`h-2 w-2 rounded-full ${severity.dot}`} aria-hidden />
@@ -183,16 +215,15 @@ export function ThreatLane({
         <p className="data mt-1 text-[11px] text-bone-faint">{THREAT_MECHANISM[lane.threat]}</p>
       </header>
 
-      {/* min-h-[56px] rather than min-h-0: the ruling footer below can now
-          shrink to fit (it has its own min-h-0/max-h/overflow), but without
-          a floor here the flex algorithm can still hand it nearly all the
-          remaining space and leave this — the actual evidence trail — a
-          sliver, which is the one thing on this page that must stay
-          readable. 56px is enough for a couple of short lines; a session
-          with a long chat history can still make a lane scroll internally
-          as a whole on a short viewport, which is a fair trade against
-          hiding the claims a ruling is supposed to be checkable against. */}
-      <div ref={scroller} className="min-h-[56px] flex-1 overflow-y-auto px-3.5 py-2">
+      {/* Evidence trail — expanded lanes get generous space, collapsed lanes
+          still show a scrollable peek so they're never fully hidden. */}
+      <div
+        ref={scroller}
+        className={[
+          "overflow-y-auto px-3.5 py-2 transition-all duration-300",
+          isExpanded ? "flex-1 min-h-[80px]" : "min-h-[40px] max-h-[100px]",
+        ].join(" ")}
+      >
         {lane.entries.length === 0 && (
           <p className="py-6 text-center text-[12.5px] text-bone-faint">
             Waiting for the ground to arrive.
@@ -220,10 +251,15 @@ export function ThreatLane({
         // cap keeps a long ruling from doing the same in reverse; the
         // overflow makes it scroll internally instead of visually bleeding
         // past its own border into the lane below it.
-        <div className="min-h-0 max-h-40 overflow-y-auto border-t border-ground-700 px-3.5 py-3">
+        <div
+          className={[
+            "min-h-0 overflow-y-auto border-t border-ground-700 px-3.5 py-3 transition-all duration-300",
+            isExpanded ? "max-h-60" : "max-h-20",
+          ].join(" ")}
+        >
           <p className="text-[13px] leading-snug text-bone">{lane.ruling.explanation}</p>
 
-          {lane.ruling.unknowns.length > 0 && (
+          {isExpanded && lane.ruling.unknowns.length > 0 && (
             <div className="mt-2.5">
               <p className="eyebrow">What is unknown</p>
               <ul className="mt-1 space-y-1">
@@ -236,7 +272,7 @@ export function ThreatLane({
             </div>
           )}
 
-          {lane.ruling.rejected_counter_argument && (
+          {isExpanded && lane.ruling.rejected_counter_argument && (
             <div className="mt-2.5">
               <p className="eyebrow">Rejected counter-argument</p>
               <p className="mt-1 text-[12.5px] leading-snug text-bone-dim">
@@ -245,7 +281,7 @@ export function ThreatLane({
             </div>
           )}
 
-          {lane.ruling.invalidation_condition && (
+          {isExpanded && lane.ruling.invalidation_condition && (
             <div className="mt-2.5">
               <p className="eyebrow">Reopens if</p>
               <p className="mt-1 text-[12.5px] leading-snug text-moisture">
