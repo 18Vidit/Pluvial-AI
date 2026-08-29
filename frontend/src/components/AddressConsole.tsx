@@ -7,7 +7,7 @@ import { GroundMap } from "@/components/GroundMap";
 import { SampleInspector } from "@/components/SampleInspector";
 import { THREAT_LABEL, ThreatLane } from "@/components/ThreatLane";
 import { chatConfirmPath, chatPath, fetchAnalysis, PlanError, planAnalysis, runPath } from "@/lib/address-api";
-import { THREATS } from "@/lib/address-types";
+import { Threat, THREATS } from "@/lib/address-types";
 import { AnalysisState, initialState, reduce, StoredAnalysis } from "@/lib/analysis-state";
 import { streamEvents } from "@/lib/stream";
 
@@ -43,6 +43,7 @@ export function AddressConsole({ locationId }: { locationId?: number }) {
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [expandedLane, setExpandedLane] = useState<Threat>("foundation");
   const abort = useRef<AbortController | null>(null);
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -224,8 +225,24 @@ export function AddressConsole({ locationId }: { locationId?: number }) {
   const fetched = state.samples.filter((s) => s.profile).length;
   const usable = state.samples.filter((s) => s.soil_usable).length;
 
+  /* Auto-expand a lane when its cascade starts (stage changes from null
+     to a value). The user can still click any lane header to switch
+     manually — this just follows the action when it moves. */
+  useEffect(() => {
+    for (const threat of THREATS) {
+      if (state.lanes[threat].stage && !state.lanes[threat].ruling) {
+        setExpandedLane(threat);
+        break;
+      }
+    }
+  }, [
+    state.lanes.foundation.stage,
+    state.lanes.service_lines.stage,
+    state.lanes.subsidence.stage,
+  ]);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex flex-1 flex-col">
       {/* ── the ask ──────────────────────────────────────────────────── */}
       <div className="border-b border-ground-700 bg-ground-900/95 px-5 py-4 sm:px-8">
         <form
@@ -301,8 +318,9 @@ export function AddressConsole({ locationId }: { locationId?: number }) {
       )}
 
       {/* ── map + lanes ──────────────────────────────────────────────── */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
-        <div className="relative min-h-[380px] lg:min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+        {/* ── sticky map column ─────────────────────────────────────── */}
+        <div className="relative min-h-[380px] lg:sticky lg:top-0 lg:h-[calc(100dvh-57px)]">
           <GroundMap
             center={state.center}
             samples={state.samples}
@@ -342,7 +360,8 @@ export function AddressConsole({ locationId }: { locationId?: number }) {
           )}
         </div>
 
-        <div className="flex min-h-0 flex-col gap-3 border-t border-ground-700 p-3 lg:border-l lg:border-t-0">
+        {/* ── lanes column ──────────────────────────────────────────── */}
+        <div className="flex flex-col gap-3 border-t border-ground-700 p-3 lg:border-l lg:border-t-0">
           {state.triage && (
             <div className="rounded-lg border border-ground-700 bg-ground-850 px-3.5 py-2.5">
               <p className="eyebrow">triage · {state.triage.decision}</p>
@@ -364,16 +383,25 @@ export function AddressConsole({ locationId }: { locationId?: number }) {
             </div>
           )}
 
-          <div className="grid min-h-0 flex-1 grid-rows-3 gap-3">
+          {/* Agent lanes — expanded lane gets flex-[3], others get flex-1.
+              All lanes remain visible; only the proportional size changes. */}
+          <div className="flex flex-col gap-3" style={{ minHeight: "calc(100dvh - 280px)" }}>
             {THREATS.map((threat) => (
               <ThreatLane
                 key={threat}
                 lane={state.lanes[threat]}
+                isExpanded={expandedLane === threat}
+                onToggle={() => setExpandedLane(threat)}
                 onSelectSample={setSelected}
               />
             ))}
           </div>
+        </div>
+      </div>
 
+      {/* ── chat + summary (full width, below the map/lanes grid) ──── */}
+      <div className="border-t border-ground-700 p-3 sm:p-5 lg:px-8">
+        <div className="mx-auto max-w-4xl space-y-4">
           <ChatComposer
             turns={turns}
             quote={quote}
