@@ -463,6 +463,59 @@ def complaints_up_to(con: psycopg.Connection, frozen_at: str) -> list[dict[str, 
     return [dict(r) for r in rows]
 
 
+def repair_events_on_segment(
+    con: psycopg.Connection, segment_id: int, window_start: str, window_end: str,
+) -> list[dict[str, Any]]:
+    """All complaints on a segment within [window_start, window_end], used to
+    compute repair-proxy labels (see eval/repair_labels.py).  Returns every
+    complaint regardless of status so the label function can distinguish
+    'closed quickly' from 'still open'."""
+    rows = con.execute(
+        """
+        SELECT case_number, incident_case_type, title, status,
+               latitude, longitude, created_at, closed_at, segment_id
+        FROM complaints
+        WHERE segment_id = %s
+          AND created_at >= %s AND created_at <= %s
+        ORDER BY created_at
+        """,
+        (segment_id, window_start, window_end),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def segments_with_complaints_in_window(
+    con: psycopg.Connection, before: str, require_profile: bool = True,
+) -> list[int]:
+    """Distinct segment IDs that had at least one complaint before ``before``
+    and (optionally) have a Mireye profile cached.  These are the candidates
+    for the repair backtest — a segment with no complaints before T cannot
+    have been predicted, and a segment without a profile cannot be reasoned
+    over."""
+    if require_profile:
+        rows = con.execute(
+            """
+            SELECT DISTINCT c.segment_id FROM complaints c
+            JOIN segments s ON s.segment_id = c.segment_id
+            WHERE c.created_at <= %s
+              AND c.segment_id IS NOT NULL
+              AND s.profile_json IS NOT NULL
+            ORDER BY c.segment_id
+            """,
+            (before,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            """
+            SELECT DISTINCT segment_id FROM complaints
+            WHERE created_at <= %s AND segment_id IS NOT NULL
+            ORDER BY segment_id
+            """,
+            (before,),
+        ).fetchall()
+    return [r["segment_id"] for r in rows]
+
+
 # --- live loop ---------------------------------------------------------------
 
 def covered_case_numbers(con: psycopg.Connection) -> set[str]:

@@ -276,6 +276,78 @@ def backtest(
 
 
 @app.command()
+def repair_backtest(
+    frozen_at: str = typer.Option(
+        None,
+        help="Single ISO date to freeze at. If omitted, runs a rolling sweep across 6 dates (2023-01 to 2025-07).",
+    ),
+    observation_months: int = typer.Option(6, help="How many months after T to look for repairs"),
+    run_budget_ceiling: int = 0,
+    max_segments: int | None = typer.Option(None, help="Cap the number of segments per window"),
+    account_label: str = "shard-1",
+) -> None:
+    """Backtest the cascade against repair-proxy labels: 'did the city
+    actually close/fix something on this segment within N months of the
+    complaint?' instead of the escalation/recurrence proxy.
+
+    Without --frozen-at, runs a rolling sweep across 6 dates spaced
+    6 months apart (Jan and Jul, 2023–2025). With --frozen-at, runs
+    a single window.
+    """
+    from pluvial.eval.repair_backtest import (
+        run_repair_backtest_sweep,
+        run_repair_backtest_window,
+    )
+
+    key = os.environ.get("MIREYE_API_KEY_1")
+    if not key:
+        typer.echo("MIREYE_API_KEY_1 not set", err=True)
+        raise typer.Exit(1)
+    account = MireyeAccount(label=account_label, api_key=key)
+
+    with dal.connect() as con:
+        if frozen_at:
+            result = asyncio.run(run_repair_backtest_window(
+                con, account, frozen_at, observation_months,
+                run_budget_ceiling, max_segments,
+            ))
+            out = {
+                "mode": "repair_backtest",
+                "frozen_at": result.frozen_at,
+                "window_end": result.window_end,
+                "n": result.n,
+                "precision": result.precision,
+                "recall": result.recall,
+                "label_distribution": result.label_distribution,
+                "true_positive": result.true_positive,
+                "false_positive": result.false_positive,
+                "false_negative": result.false_negative,
+                "true_negative": result.true_negative,
+                "results": result.results,
+            }
+        else:
+            out = asyncio.run(run_repair_backtest_sweep(
+                con, account,
+                observation_months=observation_months,
+                run_budget_ceiling=run_budget_ceiling,
+                max_segments=max_segments,
+            ))
+
+    summary = {k: v for k, v in out.items() if k != "results" and k != "per_window"}
+    if "per_window" in out:
+        summary["per_window"] = [
+            {k: v for k, v in w.items() if k != "results"}
+            for w in out["per_window"]
+        ]
+    typer.echo(json.dumps(summary, indent=2, default=str))
+
+    tag = frozen_at.replace(":", "-") if frozen_at else "sweep"
+    out_path = DEFAULT_DATA_DIR / f"repair_backtest_{tag}.json"
+    out_path.write_text(json.dumps(out, indent=2, default=str))
+    typer.echo(f"full results written to {out_path}")
+
+
+@app.command()
 def negative_control(
     sample_size: int = 200,
     run_full: bool = False,
