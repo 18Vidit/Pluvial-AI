@@ -7,17 +7,21 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { SampleView } from "@/lib/address-types";
 
-/* CARTO's dark basemap: free, keyless, and already the right value range for
-   a palette built on soil-black. Attribution is required and is rendered by
-   MapLibre's own control below. Nothing here can leak a credential because
-   there is no credential. */
+/* OpenStreetMap's standard raster tiles: free, keyless, and bright/colorful
+   rather than dark. CARTO's whole keyless basemaps.cartocdn.com service
+   (dark_all, light_all, voyager alike) is deprecated and now serves an
+   "API KEY REQUIRED" watermark tile in place of the real basemap — that
+   watermark, not a deliberate palette choice, is why the map looked dark
+   and gloomy. Attribution is required and is rendered by MapLibre's own
+   control below. Nothing here can leak a credential because there is no
+   credential. */
 const RASTER_TILES = [
-  "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-  "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-  "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+  "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
 ];
 const ATTRIBUTION =
-  '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> contributors, <a href="https://carto.com/attributions">© CARTO</a>';
+  '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> contributors';
 
 /* Served as a static asset by scripts/copy-maplibre-worker.mjs rather than
    bundled. Turbopack does not resolve maplibre's internal worker URL, and the
