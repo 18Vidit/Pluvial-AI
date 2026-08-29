@@ -183,7 +183,16 @@ export function ThreatLane({
         <p className="data mt-1 text-[11px] text-bone-faint">{THREAT_MECHANISM[lane.threat]}</p>
       </header>
 
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
+      {/* min-h-[56px] rather than min-h-0: the ruling footer below can now
+          shrink to fit (it has its own min-h-0/max-h/overflow), but without
+          a floor here the flex algorithm can still hand it nearly all the
+          remaining space and leave this — the actual evidence trail — a
+          sliver, which is the one thing on this page that must stay
+          readable. 56px is enough for a couple of short lines; a session
+          with a long chat history can still make a lane scroll internally
+          as a whole on a short viewport, which is a fair trade against
+          hiding the claims a ruling is supposed to be checkable against. */}
+      <div ref={scroller} className="min-h-[56px] flex-1 overflow-y-auto px-3.5 py-2">
         {lane.entries.length === 0 && (
           <p className="py-6 text-center text-[12.5px] text-bone-faint">
             Waiting for the ground to arrive.
@@ -202,7 +211,16 @@ export function ThreatLane({
       </div>
 
       {lane.ruling && (
-        <div className="border-t border-ground-700 px-3.5 py-3">
+        // min-h-0 + overflow-y-auto + max-h together, not any one alone: a
+        // plain block child of a flex column has an implicit min-height
+        // equal to its own content size unless overflow is anything but
+        // visible, so flexbox refuses to shrink this box below its content
+        // height (observed live: 244px of ruling text in a 111px section)
+        // and starves the evidence scroller above it down to nothing. The
+        // cap keeps a long ruling from doing the same in reverse; the
+        // overflow makes it scroll internally instead of visually bleeding
+        // past its own border into the lane below it.
+        <div className="min-h-0 max-h-40 overflow-y-auto border-t border-ground-700 px-3.5 py-3">
           <p className="text-[13px] leading-snug text-bone">{lane.ruling.explanation}</p>
 
           {lane.ruling.unknowns.length > 0 && (

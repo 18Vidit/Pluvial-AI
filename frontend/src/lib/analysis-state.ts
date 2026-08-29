@@ -40,6 +40,23 @@ export interface AnalysisState {
   error: string | null;
 }
 
+/** A React key for LaneEntry, generated independently of the backend's
+ *  `event.seq`. The backend's seq only counts events within ONE SSE
+ *  request — every `/analyze/run`, `/chat` and `/chat/confirm` call starts
+ *  a fresh EventStream at seq=1 — but a session's lane entries accumulate
+ *  across many such requests (a chat turn appends to lanes a prior run
+ *  already populated). Keying React's list on the raw backend seq meant
+ *  two entries from different requests could carry the same small integer
+ *  and collide as React keys — observed live as a "two children with the
+ *  same key" warning once a chat-driven regional search's own EventStream
+ *  restarted numbering from 1. This counter is unique for the page's
+ *  entire lifetime, independent of how many requests contributed entries. */
+let nextEntryKey = 0;
+function entryKey(): number {
+  nextEntryKey += 1;
+  return nextEntryKey;
+}
+
 export function emptyLanes(): Record<Threat, LaneState> {
   const lanes = {} as Record<Threat, LaneState>;
   for (const threat of THREATS) {
@@ -373,6 +390,15 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
     }
 
     case "triage":
+      // Defense in depth: the backend now scopes every non-primary caller
+      // (region search's per-survivor adjudication) to a prefixed lane like
+      // "region-1-system" rather than bare "system", specifically so this
+      // never fires for anything but the address actually being viewed. A
+      // live run demonstrated the failure mode before that existed — a
+      // chat-driven regional search overwrote the triage line of the
+      // address on screen — so this stays lane-gated even though the
+      // backend should never send anything else here.
+      if (event.lane !== "system") return credits;
       return {
         ...credits,
         triage: { decision: String(p.decision), reason: String(p.reason ?? "") },
@@ -384,7 +410,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
       // ThreatLane maps it to readable text. System stages (the moisture sync,
       // the fetch) do carry one, because "moisture started" means nothing.
       const entry: LaneEntry = {
-        seq: event.seq,
+        seq: entryKey(),
         kind: "stage",
         text: (p.label as string) ?? String(p.stage),
       };
@@ -406,7 +432,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
     case "tool_call": {
       if (p.status !== "called") return credits;
       return pushLane(credits, event.lane, {
-        seq: event.seq,
+        seq: entryKey(),
         kind: "tool_call",
         text: (p.label as string) ?? (p.tool as string),
         sample_id: p.sample_id != null ? Number(p.sample_id) : null,
@@ -416,7 +442,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
     case "claim": {
       const claim = p as unknown as AddressCitedClaim & { side: "investigator" | "skeptic" };
       const entry: LaneEntry = {
-        seq: event.seq,
+        seq: entryKey(),
         kind: "claim",
         side: claim.side,
         text: claimText(claim),
@@ -448,7 +474,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
       const sampleIds = ((p.sample_ids as unknown as number[]) ?? []).map(Number);
       const threat = event.lane as Threat;
       let next = pushLane(credits, event.lane, {
-        seq: event.seq,
+        seq: entryKey(),
         kind: "veto",
         text: "Honesty Gate: soil claim vetoed",
         detail: (p.reason as string) ?? undefined,
@@ -471,7 +497,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
 
     case "message":
       return pushLane(credits, event.lane, {
-        seq: event.seq,
+        seq: entryKey(),
         kind: "message",
         side: p.side as "investigator" | "skeptic",
         text: String(p.text ?? ""),
@@ -491,7 +517,7 @@ export function applyEvent(state: AnalysisState, event: StreamEvent): AnalysisSt
             ruling,
             entries: [
               ...credits.lanes[threat].entries,
-              { seq: event.seq, kind: "ruling", text: ruling.severity, detail: ruling.explanation },
+              { seq: entryKey(), kind: "ruling", text: ruling.severity, detail: ruling.explanation },
             ],
           },
         },
