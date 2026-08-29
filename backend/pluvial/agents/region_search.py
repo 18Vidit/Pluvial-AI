@@ -371,7 +371,10 @@ async def adjudicate_survivors(
                     "so these rulings are area-level guidance, not an address-level answer.",
         }, lane="region"))
 
-        _, results = await stream_all_threats(ctx, stream, emit)
+        # A distinct lane per survivor so this cascade's claims and rulings
+        # cannot land on the plain "foundation"/"system" lanes a browser
+        # tab's primary analysis is already using — see stream_all_threats.
+        _, results = await stream_all_threats(ctx, stream, emit, lane_prefix=f"region-{rank}-")
         record_rulings(con, location_id, ctx.guidance_version, results)
         con.commit()
 

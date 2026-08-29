@@ -115,30 +115,40 @@ async def _run_streamed(
 
 async def stream_threat_cascade(
     ctx: AddressContext, threat: str, summary: str, stream: EventStream, emit: Emit,
+    lane: str | None = None,
 ) -> tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]:
+    """`lane` is the SSE tag events are streamed under and defaults to
+    `threat` — the primary address flow's normal behaviour. Region search's
+    survivor adjudication passes a distinct, prefixed lane (see
+    `stream_all_threats`'s `lane_prefix`) so its claims and rulings cannot
+    land on whatever "foundation"/"service_lines"/"subsidence" lane a
+    browser tab already has mounted for an unrelated address. `ruling.threat`
+    is untouched by this — that field is the true threat and other code
+    keys off it."""
+    lane = lane or threat
     investigator, skeptic, adjudicator = build_address_agents(ctx.con, threat)
 
     investigator_out: InvestigatorOutput = await _run_streamed(
         investigator, f"Location and sampled ground:\n{summary}",
-        ctx, threat, "investigator", stream, emit,
+        ctx, lane, "investigator", stream, emit,
     )
     for claim in investigator_out.claims:
-        await emit(stream.make("claim", {"side": "investigator", **claim.model_dump()}, lane=threat))
+        await emit(stream.make("claim", {"side": "investigator", **claim.model_dump()}, lane=lane))
     await emit(stream.make(
         "message",
         {"side": "investigator", "text": investigator_out.argument},
-        lane=threat,
+        lane=lane,
     ))
 
     skeptic_out: SkepticOutput = await _run_streamed(
         skeptic,
         f"Location and sampled ground:\n{summary}\n\n"
         f"Investigator's case:\n{investigator_out.model_dump_json()}",
-        ctx, threat, "skeptic", stream, emit,
+        ctx, lane, "skeptic", stream, emit,
     )
     for claim in skeptic_out.claims:
-        await emit(stream.make("claim", {"side": "skeptic", **claim.model_dump()}, lane=threat))
-    await emit(stream.make("message", {"side": "skeptic", "text": skeptic_out.argument}, lane=threat))
+        await emit(stream.make("claim", {"side": "skeptic", **claim.model_dump()}, lane=lane))
+    await emit(stream.make("message", {"side": "skeptic", "text": skeptic_out.argument}, lane=lane))
     if skeptic_out.soil_claim_vetoed:
         await emit(stream.make(
             "veto",
@@ -146,7 +156,7 @@ async def stream_threat_cascade(
                 "reason": skeptic_out.veto_reason,
                 "sample_ids": skeptic_out.vetoed_sample_ids,
             },
-            lane=threat,
+            lane=lane,
         ))
 
     ruling: ThreatRuling = await _run_streamed(
@@ -154,26 +164,45 @@ async def stream_threat_cascade(
         f"Location and sampled ground:\n{summary}\n\n"
         f"Investigator's case:\n{investigator_out.model_dump_json()}\n\n"
         f"Skeptic's rebuttal:\n{skeptic_out.model_dump_json()}",
-        ctx, threat, "adjudicator", stream, emit,
+        ctx, lane, "adjudicator", stream, emit,
     )
     ruling.threat = threat  # type: ignore[assignment]
-    await emit(stream.make("ruling", ruling.model_dump(), lane=threat))
+    await emit(stream.make("ruling", ruling.model_dump(), lane=lane))
     return ruling, investigator_out, skeptic_out
 
 
 async def stream_all_threats(
     ctx: AddressContext, stream: EventStream, emit: Emit, threats: tuple[str, ...] = THREATS,
+    lane_prefix: str = "",
 ) -> tuple[AddressTriageOutput, dict[str, tuple[ThreatRuling, InvestigatorOutput, SkepticOutput]]]:
+    """lane_prefix scopes every event this run emits to lanes the primary
+    address view cannot mistake for its own.
+
+    Every caller of this function shares one browser tab's event stream:
+    the primary `/analyze/run`, a chat-driven `analyze_location`, and
+    region search's per-survivor adjudication in `adjudicate_survivors` can
+    all be in flight against the same session. Without a prefix, a survivor
+    cascade's own "foundation" claims and "system" triage would land on
+    literally the same lanes the primary analysis is using, and a live run
+    demonstrated exactly that: a chat-driven regional search overwrote the
+    triage line and threat-lane rulings of the Georgetown address the user
+    was actively looking at. The default ("") preserves the primary flow's
+    plain lane names unchanged.
+    """
     summary = location_summary(ctx)
+    system_lane = f"{lane_prefix}system"
 
     triage_out: AddressTriageOutput = await _run_streamed(
-        build_triage_agent(ctx.con), summary, ctx, "system", "triage", stream, emit,
+        build_triage_agent(ctx.con), summary, ctx, system_lane, "triage", stream, emit,
     )
-    await emit(stream.make("triage", triage_out.model_dump()))
+    await emit(stream.make("triage", triage_out.model_dump(), lane=system_lane))
     summary += _triage_note(triage_out)
 
     results = await asyncio.gather(
-        *(stream_threat_cascade(ctx, threat, summary, stream, emit) for threat in threats)
+        *(
+            stream_threat_cascade(ctx, threat, summary, stream, emit, lane=f"{lane_prefix}{threat}")
+            for threat in threats
+        )
     )
     return triage_out, dict(zip(threats, results))
 
